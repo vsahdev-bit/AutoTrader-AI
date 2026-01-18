@@ -1,0 +1,19 @@
+# GitHub CODEOWNERS for AutoTrader AI
+
+# Backend services
+/services/ @dev-team
+
+# Frontend
+/web-app/ @dev-team
+
+# ML Services
+/ml-services/ @dev-team
+
+# Infrastructure
+/infrastructure/ @devops-team
+
+# Database
+/database/ @devops-team
+
+# Docs
+/docs/ @dev-team

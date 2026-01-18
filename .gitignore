@@ -1,0 +1,62 @@
+# General
+.DS_Store
+*.log
+*.tmp
+.env
+.env.local
+
+# Java/Maven
+services/**/target/
+services/**/.mvn/
+services/**/mvnw
+services/**/mvnw.cmd
+*.class
+*.jar
+!**/wrapper/*.jar
+
+# Python
+ml-services/**/__pycache__/
+ml-services/**/*.pyc
+ml-services/**/.pytest_cache/
+ml-services/**/venv/
+ml-services/**/.venv/
+ml-services/**/dist/
+ml-services/**/build/
+ml-services/**/*.egg-info/
+
+# Node/React
+web-app/node_modules/
+web-app/dist/
+web-app/build/
+web-app/.vite/
+web-app/.next/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets (NEVER COMMIT)
+**/secrets/
+**/*.key
+**/*.pem
+**/vault-keys.txt
+**/application-secrets.yml
+
+# Database
+database/**/*.sql.bak
+database/**/data/
+
+# Docker
+infrastructure/docker/data/
+
+# Terraform
+infrastructure/terraform/.terraform/
+infrastructure/terraform/*.tfstate
+infrastructure/terraform/*.tfstate.backup
+infrastructure/terraform/.terraform.lock.hcl
+
+# OS
+Thumbs.db
