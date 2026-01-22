@@ -1,0 +1,29 @@
+# Connector Health Check Service Dockerfile
+# Runs health checks for data connectors (every 3 hours) and LLM connectors (every 6 hours)
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY ml-services/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy health check service
+COPY ml-services/connector_health_service.py /app/
+COPY ml-services/vault_client.py /app/
+
+# Copy streaming connectors (needed for testing data sources)
+COPY streaming/ /app/streaming/
+
+# Set Python path
+ENV PYTHONPATH="/app"
+
+# Run the health check service (scheduled mode)
+CMD ["python", "connector_health_service.py"]

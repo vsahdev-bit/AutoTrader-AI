@@ -60,3 +60,6 @@ infrastructure/terraform/.terraform.lock.hcl
 
 # OS
 Thumbs.db
+
+# Node modules (all directories)
+node_modules/

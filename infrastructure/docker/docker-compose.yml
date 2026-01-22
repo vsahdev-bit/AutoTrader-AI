@@ -1,7 +1,148 @@
+# =============================================================================
+# AutoTrader AI - Local Development Infrastructure
+# =============================================================================
+#
+# This Docker Compose file defines all infrastructure services required for
+# local development of the AutoTrader AI platform. It creates an isolated
+# environment that mirrors production infrastructure.
+#
+# Services Included:
+# ------------------
+# - PostgreSQL 15:  Primary database for users, trades, configurations
+# - Redis 7:        Session cache, hot data caching, rate limiting
+# - Kafka:          Event streaming for real-time signal processing
+# - Zookeeper:      Kafka coordination (required by Kafka)
+# - ClickHouse:     Time-series analytics database for ML features
+# - Vault:          Secrets management for brokerage tokens
+#
+# Network Architecture:
+# --------------------
+# All services communicate via the 'autotrader-network' bridge network.
+# Services reference each other by container name (e.g., 'postgres:5432').
+#
+# Data Persistence:
+# ----------------
+# Named volumes preserve data across container restarts:
+# - postgres_data: User data, trades, configurations
+# - redis_data:    Cached sessions (optional persistence)
+# - clickhouse_data: Historical time-series features
+#
+# Usage:
+# ------
+# Start all services:   docker-compose up -d
+# Stop all services:    docker-compose down
+# View logs:            docker-compose logs -f [service-name]
+# Reset everything:     docker-compose down -v (WARNING: deletes all data)
+#
+# Port Mappings (host:container):
+# ------------------------------
+# - 5432: PostgreSQL
+# - 6379: Redis
+# - 9092: Kafka
+# - 2181: Zookeeper
+# - 8123: ClickHouse HTTP
+# - 9000: ClickHouse Native
+# - 8200: Vault
+#
+# @see GETTING_STARTED.md for setup instructions
+# @see database/postgres/ for schema migrations
+# =============================================================================
+
 version: '3.9'
 
 services:
-  # PostgreSQL Database
+  # ===========================================================================
+  # Web App - React Frontend
+  # ===========================================================================
+  # Provides: User interface for AutoTrader AI platform
+  # Port: 5173 (Vite dev server)
+  # ===========================================================================
+  web-app:
+    build:
+      context: ../../web-app
+      dockerfile: Dockerfile
+    container_name: autotrader-web-app
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://api-gateway:3001
+    depends_on:
+      - api-gateway
+    networks:
+      - autotrader-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5173"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # Recommendation Engine - ML Service for Stock Recommendations
+  # ===========================================================================
+  # Generates AI-powered trading recommendations every 2 hours
+  # Uses news sentiment and technical indicators to produce BUY/SELL/HOLD signals
+  # ===========================================================================
+  recommendation-engine:
+    build:
+      context: ../..
+      dockerfile: ml-services/recommendation-engine/Dockerfile.service
+    container_name: autotrader-recommendation-engine
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-root-token
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=clickhouse_dev_pass
+      - REDIS_URL=redis://redis:6379
+      - SCHEDULE_INTERVAL_SECONDS=7200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - autotrader-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Connector Health Check Service - Monitors Data & LLM Connectors
+  # ===========================================================================
+  # Runs health checks on separate schedules:
+  # - Data connectors: every 3 hours
+  # - LLM connectors: every 6 hours (to minimize token costs)
+  # ===========================================================================
+  connector-health:
+    build:
+      context: ../..
+      dockerfile: ml-services/Dockerfile.health
+    container_name: autotrader-connector-health
+    environment:
+      - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-root-token
+      - DATA_CONNECTOR_INTERVAL=10800
+      - LLM_CONNECTOR_INTERVAL=21600
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    networks:
+      - autotrader-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # PostgreSQL - Primary Relational Database
+  # ===========================================================================
+  # Stores: Users, trades, configurations, recommendations, audit logs
+  # Used by: All Java microservices, API Gateway
+  # ===========================================================================
   postgres:
     image: postgres:15-alpine
     container_name: autotrader-postgres
@@ -84,6 +225,9 @@ services:
     container_name: autotrader-clickhouse
     environment:
       CLICKHOUSE_DB: autotrader
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse_dev_pass
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -99,20 +243,58 @@ services:
 
   # Vault (Secrets Management)
   vault:
-    image: vault:latest
+    image: hashicorp/vault:1.15
     container_name: autotrader-vault
     environment:
       VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
       VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
     ports:
       - "8200:8200"
     cap_add:
       - IPC_LOCK
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8200/v1/sys/health"]
+      test: ["CMD", "sh", "-c", "VAULT_ADDR=http://127.0.0.1:8200 vault status"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - autotrader-network
+
+  # ===========================================================================
+  # API Gateway - Node.js Express Server
+  # ===========================================================================
+  # Handles: Authentication, routing, brokerage connections, connector status
+  # Used by: Web App frontend
+  # ===========================================================================
+  api-gateway:
+    image: node:20-alpine
+    container_name: autotrader-api-gateway
+    working_dir: /app
+    command: sh -c "npm install && npm start"
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+    volumes:
+      - ../../api-gateway:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - autotrader-network
 

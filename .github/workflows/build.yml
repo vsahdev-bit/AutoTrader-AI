@@ -1,3 +1,41 @@
+# =============================================================================
+# AutoTrader AI - Continuous Integration Pipeline
+# =============================================================================
+#
+# This workflow runs on every push and pull request to main/develop branches.
+# It performs comprehensive build and test validation across all service types.
+#
+# Pipeline Stages:
+# ---------------
+# 1. backend-build:     Java microservices (Maven, JUnit 5)
+# 2. frontend-build:    React/TypeScript app (npm, ESLint, Vite)
+# 3. ml-services-build: Python ML services (pip, pytest, flake8)
+# 4. docker-build:      Container images (only on main branch push)
+#
+# Parallelization:
+# ---------------
+# The first three jobs run in parallel for faster feedback.
+# docker-build waits for all tests to pass before building images.
+#
+# Caching:
+# --------
+# - Maven: ~/.m2 repository cached between runs
+# - npm: node_modules cached via package-lock.json hash
+# - pip: Python packages cached between runs
+#
+# Secrets Required:
+# ----------------
+# - DOCKER_USERNAME: Docker Hub username (for image push)
+# - DOCKER_PASSWORD: Docker Hub password/token
+#
+# Branch Protection:
+# -----------------
+# Recommended: Require all jobs to pass before merging PRs to main.
+#
+# @see deploy.yml for deployment pipeline
+# @see CONTRIBUTING.md for development guidelines
+# =============================================================================
+
 name: Build & Test
 
 on:
@@ -7,6 +45,15 @@ on:
     branches: [ main, develop ]
 
 jobs:
+  # ===========================================================================
+  # Backend Build - Java Microservices
+  # ===========================================================================
+  # Compiles and tests all Spring Boot services:
+  # - auth-service
+  # - config-service
+  # - recommendation-service
+  # - trade-execution-service
+  # ===========================================================================
   backend-build:
     runs-on: ubuntu-latest
     steps:

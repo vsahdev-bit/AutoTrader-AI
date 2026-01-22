@@ -1,11 +1,70 @@
+# =============================================================================
+# AutoTrader AI - Continuous Deployment Pipeline
+# =============================================================================
+#
+# This workflow handles deployment of the AutoTrader AI platform to
+# staging and production environments. It runs after successful CI builds.
+#
+# Trigger Conditions:
+# ------------------
+# - push to main: Automatic deployment to staging
+# - tags (v*):    Deployment to production (requires manual approval)
+# - workflow_dispatch: Manual trigger for ad-hoc deployments
+#
+# Deployment Stages:
+# -----------------
+# 1. Security checks: Run vulnerability scans (Snyk, OWASP)
+# 2. Deploy to staging: Automatic on main branch push
+# 3. Deploy to production: Only on version tags (v1.0.0, etc.)
+#
+# Environments:
+# ------------
+# - staging: For QA and integration testing
+#   - URL: https://staging.autotrader-ai.com
+#   - Auto-deploys on every main branch push
+#
+# - production: Live user-facing environment
+#   - URL: https://autotrader-ai.com
+#   - Deploys only on version tags
+#   - Requires passing staging tests
+#
+# Infrastructure:
+# --------------
+# - Kubernetes cluster (EKS/GKE)
+# - Terraform for infrastructure provisioning
+# - Helm charts for service deployment
+#
+# Secrets Required:
+# ----------------
+# - KUBECONFIG: Kubernetes cluster credentials
+# - AWS_ACCESS_KEY_ID: AWS credentials (for EKS)
+# - AWS_SECRET_ACCESS_KEY: AWS secret key
+# - VAULT_TOKEN: HashiCorp Vault access token
+#
+# Rollback:
+# --------
+# Kubernetes deployments use rolling updates with automatic rollback
+# on health check failures. Manual rollback via:
+#   kubectl rollout undo deployment/<service-name>
+#
+# @see build.yml for CI pipeline
+# @see infrastructure/kubernetes/ for K8s manifests
+# @see infrastructure/terraform/ for IaC definitions
+# =============================================================================
+
 name: Deploy
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch:  # Allows manual trigger from GitHub Actions UI
 
 jobs:
+  # ===========================================================================
+  # Deployment Job
+  # ===========================================================================
+  # Handles security scanning and deployment to staging/production
+  # ===========================================================================
   deploy:
     runs-on: ubuntu-latest
     steps:
