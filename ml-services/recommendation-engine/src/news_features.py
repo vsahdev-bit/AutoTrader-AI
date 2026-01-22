@@ -66,7 +66,7 @@ class NewsFeatures:
     # Category-specific (optional)
     earnings_sentiment: Optional[float] = None
     analyst_sentiment: Optional[float] = None
-    product_sentiment: Optional[float] = None
+    social_sentiment: Optional[float] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -88,7 +88,7 @@ class NewsFeatures:
             "sentiment_range_7d": self.sentiment_range_7d,
             "earnings_sentiment": self.earnings_sentiment,
             "analyst_sentiment": self.analyst_sentiment,
-            "product_sentiment": self.product_sentiment,
+            "social_sentiment": self.social_sentiment,
         }
     
     def to_feature_vector(self) -> List[float]:
@@ -114,7 +114,7 @@ class NewsFeatures:
             self.sentiment_range_7d,
             self.earnings_sentiment or 0.0,
             self.analyst_sentiment or 0.0,
-            self.product_sentiment or 0.0,
+            self.social_sentiment or 0.0,
         ]
     
     @classmethod
@@ -377,7 +377,7 @@ class NewsFeatureProvider:
             sentiment_range_7d,
             earnings_sentiment,
             analyst_sentiment,
-            product_sentiment
+            social_sentiment
         FROM symbol_news_features
         WHERE symbol IN ({symbols_str})
           AND feature_date = '{feature_date.isoformat()}'
@@ -409,7 +409,7 @@ class NewsFeatureProvider:
                 sentiment_range_7d=row[14] or 0.0,
                 earnings_sentiment=row[15],
                 analyst_sentiment=row[16],
-                product_sentiment=row[17],
+                social_sentiment=row[17],
             )
             result[features.symbol] = features
         
@@ -545,7 +545,7 @@ class NewsFeatureProvider:
             sentiment_range_7d=data["sentiment_range_7d"],
             earnings_sentiment=data.get("earnings_sentiment"),
             analyst_sentiment=data.get("analyst_sentiment"),
-            product_sentiment=data.get("product_sentiment"),
+            social_sentiment=data.get("social_sentiment"),
         )
     
     async def get_news_articles(

@@ -806,7 +806,7 @@ class TechnicalFeatureProvider:
             try:
                 from vault_client import VaultClient
                 vault = VaultClient()
-                secret = await vault.get_secret('connectors/polygon')
+                secret = await vault.get_secret('polygon')
                 api_key = secret.get('api_key') if secret else None
             except Exception as e:
                 logger.warning(f"Failed to get Polygon API key from Vault: {e}")
@@ -865,7 +865,7 @@ class TechnicalFeatureProvider:
             try:
                 from vault_client import VaultClient
                 vault = VaultClient()
-                secret = await vault.get_secret('connectors/fmp')
+                secret = await vault.get_secret('fmp')
                 api_key = secret.get('api_key') if secret else None
             except Exception as e:
                 logger.warning(f"Failed to get FMP API key from Vault: {e}")
