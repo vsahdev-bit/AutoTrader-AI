@@ -60,7 +60,7 @@ class PolygonConnector(BaseNewsConnector):
     """
     
     source = NewsSource.POLYGON
-    base_url = "https://api.polygon.io"
+    base_url = "https://api.massive.com"
     rate_limit_per_minute = 5  # Free tier limit
     
     def __init__(

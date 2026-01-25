@@ -596,6 +596,48 @@ class LLMAnalyzerWithFallback(BaseSentimentAnalyzer):
         else:
             logger.warning("No LLM API keys configured. LLM analysis will be unavailable.")
     
+    async def _analyze_with_openai(self, text: str, context: Optional[str] = None) -> SentimentResult:
+        """Analyze using OpenAI API directly (without catching exceptions)."""
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+        
+        client = AsyncOpenAI(api_key=self._api_keys['openai'])
+        prompt = self._build_sentiment_prompt(text, context)
+        
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a financial sentiment analyzer. Respond only with valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=500,
+        )
+        
+        return self._parse_llm_response(response.choices[0].message.content, "openai")
+    
+    async def _analyze_with_anthropic(self, text: str, context: Optional[str] = None) -> SentimentResult:
+        """Analyze using Anthropic API directly (without catching exceptions)."""
+        try:
+            from anthropic import AsyncAnthropic
+        except ImportError:
+            raise ImportError("anthropic package not installed. Run: pip install anthropic")
+        
+        client = AsyncAnthropic(api_key=self._api_keys['anthropic'])
+        prompt = self._build_sentiment_prompt(text, context)
+        
+        response = await client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=500,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+        )
+        
+        return self._parse_llm_response(response.content[0].text, "anthropic")
+    
     async def _analyze_with_groq(self, text: str, context: Optional[str] = None) -> SentimentResult:
         """Analyze using Groq API."""
         try:
@@ -653,11 +695,15 @@ Respond with valid JSON only, no markdown formatting."""
             label_str = data.get('label', 'neutral').lower()
             
             label_map = {
-                'very_negative': SentimentLabel.VERY_NEGATIVE,
-                'negative': SentimentLabel.NEGATIVE,
+                'very_negative': SentimentLabel.VERY_BEARISH,
+                'very_bearish': SentimentLabel.VERY_BEARISH,
+                'negative': SentimentLabel.BEARISH,
+                'bearish': SentimentLabel.BEARISH,
                 'neutral': SentimentLabel.NEUTRAL,
-                'positive': SentimentLabel.POSITIVE,
-                'very_positive': SentimentLabel.VERY_POSITIVE,
+                'positive': SentimentLabel.BULLISH,
+                'bullish': SentimentLabel.BULLISH,
+                'very_positive': SentimentLabel.VERY_BULLISH,
+                'very_bullish': SentimentLabel.VERY_BULLISH,
             }
             
             return SentimentResult(
@@ -698,9 +744,10 @@ Respond with valid JSON only, no markdown formatting."""
             try:
                 logger.debug(f"Attempting sentiment analysis with {name}...")
                 
-                if name in ('openai', 'anthropic') and name in self._analyzers:
-                    result = await self._analyzers[name].analyze(text, context)
-                    result.analyzer = f"llm-{name}"
+                if name == 'openai':
+                    result = await self._analyze_with_openai(text, context)
+                elif name == 'anthropic':
+                    result = await self._analyze_with_anthropic(text, context)
                 elif name == 'groq':
                     result = await self._analyze_with_groq(text, context)
                 else:

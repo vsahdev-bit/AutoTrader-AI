@@ -1,12 +1,16 @@
 /**
- * services/api.ts - API Client Layer
+ * services/api.ts - API Client Layer for v1 Endpoints
  * 
- * This module provides a centralized HTTP client for all backend API calls.
+ * This module provides a centralized HTTP client for /api/v1 backend endpoints.
  * It uses Axios with pre-configured settings for the AutoTrader AI platform.
+ * 
+ * API Structure:
+ * - /api/v1/* routes: Recommendations, connectors, health-check settings (this file)
+ * - /api/* routes: User auth, onboarding, brokerage, trades (see onboardingApi.ts)
  * 
  * Architecture:
  * - Single Axios instance with base configuration
- * - Organized into logical API groups (auth, recommendations, config, trade)
+ * - Organized into logical API groups (recommendations, config, trade, connectors)
  * - TypeScript generics for response typing
  * - Credential handling for session cookies
  * 
@@ -19,14 +23,15 @@
  * - Network errors should show user-friendly messages
  * - Consider adding response interceptors for global error handling
  * 
+ * @see onboardingApi.ts for user/auth/onboarding/trade endpoints
  * @see types/index.ts for response type definitions
  * @see vite.config.ts for proxy configuration
  */
 import axios from 'axios'
-import { Recommendation, UserConfig, SessionInfo, RecommendationHistoryResponse, ConnectorStatusResponse, ConnectorSummary } from '../types'
+import { UserConfig, RecommendationHistoryResponse, ConnectorStatusResponse, ConnectorSummary, StockRecommendationHistory, RegimeResponse } from '../types'
 
 /**
- * Axios instance configured for AutoTrader AI backend.
+ * Axios instance configured for AutoTrader AI backend v1 endpoints.
  * 
  * Configuration:
  * - baseURL: All requests prefixed with '/api/v1'
@@ -35,45 +40,12 @@ import { Recommendation, UserConfig, SessionInfo, RecommendationHistoryResponse,
  * 
  * In development, Vite proxies '/api' to the backend server (port 3001).
  * In production, both are served from the same origin.
+ * In Docker, the web-app container proxies to the api-gateway container.
  */
 const api = axios.create({
   baseURL: '/api/v1',
   withCredentials: true,  // Send cookies with requests for session handling
 })
-
-/**
- * Authentication API endpoints.
- * 
- * Handles user authentication, session management, and logout.
- * Works with the Java Auth Service (port 8081).
- * 
- * Note: Primary auth is via Google OAuth in AuthContext.tsx.
- * These endpoints are for the backend session layer.
- */
-export const authApi = {
-  /**
-   * Authenticate with email/password (future use).
-   * Currently, app uses Google OAuth - see AuthContext.tsx.
-   */
-  login: (email: string, password: string) =>
-    api.post('/auth/login', { email, password }),
-  
-  /**
-   * Get current session information.
-   * Called on app load and after navigation to verify auth state.
-   * 
-   * @returns SessionInfo with auth status and brokerage connection
-   */
-  getSession: () =>
-    api.get<SessionInfo>('/auth/session'),
-  
-  /**
-   * End the current session.
-   * Frontend should clear local storage after this call.
-   */
-  logout: () =>
-    api.post('/auth/logout'),
-}
 
 /**
  * Recommendation API endpoints.
@@ -92,7 +64,7 @@ export const recommendationApi = {
    * @returns Array of Recommendation objects with actions and explanations
    */
   getRecommendations: (limit: number = 5) =>
-    api.get<{ recommendations: Recommendation[] }>('/recommendations', { params: { limit } }),
+    api.get<{ recommendations: StockRecommendationHistory[] }>('/recommendations', { params: { limit } }),
   
   /**
    * Get historical recommendations for a specific stock symbol.
@@ -141,6 +113,41 @@ export const recommendationApi = {
       symbols?: string[];
       errorMessage?: string;
     }>('/recommendations/generation-status'),
+}
+
+/**
+ * Regime Classification API endpoints.
+ * 
+ * Fetches market regime classification from the ML Recommendation Engine.
+ * The regime model analyzes market conditions and provides:
+ * - Regime classification (volatility, trend, liquidity, information)
+ * - Regime-adaptive signal weights
+ * - Position sizing recommendations
+ * - Stop-loss recommendations
+ */
+export const regimeApi = {
+  /**
+   * Get current market regime for a symbol.
+   * 
+   * Classifies market conditions across 4 dimensions:
+   * - Volatility: low / normal / high / extreme
+   * - Trend: strong_uptrend / uptrend / mean_reverting / choppy / downtrend / strong_downtrend
+   * - Liquidity: high / normal / thin / illiquid
+   * - Information: quiet / normal / news_driven / social_driven / earnings
+   * 
+   * @param symbol Stock ticker symbol (e.g., 'AAPL', 'GOOGL')
+   * @returns RegimeResponse with classification, weights, and risk management recommendations
+   * 
+   * @see RegimeDisplay.tsx for display component
+   */
+  getRegime: async (symbol: string): Promise<RegimeResponse> => {
+    // Proxied through Vite to recommendation engine service
+    const response = await fetch(`/regime/${symbol.toUpperCase()}`)
+    if (!response.ok) {
+      throw new Error(`Failed to fetch regime for ${symbol}`)
+    }
+    return response.json()
+  },
 }
 
 /**

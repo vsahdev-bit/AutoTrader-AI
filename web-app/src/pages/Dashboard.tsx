@@ -42,7 +42,7 @@ export default function Dashboard() {
   const [brokerageConnections, setBrokerageConnections] = useState<BrokerageConnection[]>([])
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false)
   const [selectedTrade, setSelectedTrade] = useState<TradeDetails | null>(null)
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
   const navigate = useNavigate()
 
   const userId = user?.dbId || user?.sub || ''
@@ -55,16 +55,16 @@ export default function Dashboard() {
       
       // Map watchlist stocks with their recommendations
       const stocksWithData = watchlist.map(stock => {
-        const rec = recommendations.find((r: any) => r.symbol === stock.symbol)
+        const rec = recommendations.find(r => r.symbol === stock.symbol)
         if (rec) {
           return {
             id: stock.id,
             symbol: stock.symbol,
             company_name: stock.company_name,
             exchange: stock.exchange,
-            action: rec.action as 'BUY' | 'SELL' | 'HOLD',
-            confidence: rec.confidence || rec.normalizedScore || 0,
-            price: rec.priceAtRecommendation || 0,
+            action: rec.action,
+            confidence: rec.confidence ?? rec.normalizedScore ?? 0,
+            price: rec.priceAtRecommendation ?? 0,
           }
         }
         // No recommendation yet - show as needs calculation
@@ -181,11 +181,6 @@ export default function Dashboard() {
   const handleTradeSuccess = (execution: any) => {
     console.log('Trade executed:', execution)
     // Could refresh data or show notification here
-  }
-
-  const handleLogout = () => {
-    logout()
-    navigate('/')
   }
 
   const getActionColor = (action: string) => {

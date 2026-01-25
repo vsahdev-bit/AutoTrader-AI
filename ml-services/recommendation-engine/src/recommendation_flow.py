@@ -37,6 +37,8 @@ Social Media (optional API key for higher rate limits):
 
 import logging
 import os
+import signal
+import time
 import asyncio
 import asyncpg
 from datetime import datetime, timedelta
@@ -52,13 +54,21 @@ logger = logging.getLogger(__name__)
 
 # Import from sibling modules
 try:
-    from .main import RecommendationEngine, get_engine
+    from .main import (
+        RecommendationEngine, get_engine,
+        RegimeInfo, SignalWeightsInfo, PositionSizingInfo, StopLossInfo
+    )
     from .news_features import NewsFeatureProvider
     from .technical_features import TechnicalFeatureProvider
+    from .regime_classifier import RegimeClassifier
 except ImportError:
-    from main import RecommendationEngine, get_engine
+    from main import (
+        RecommendationEngine, get_engine,
+        RegimeInfo, SignalWeightsInfo, PositionSizingInfo, StopLossInfo
+    )
     from news_features import NewsFeatureProvider
     from technical_features import TechnicalFeatureProvider
+    from regime_classifier import RegimeClassifier
 
 # Import market data connectors
 import sys
@@ -1497,9 +1507,18 @@ class RecommendationFlowService:
         """
         Check if current time is within trading hours (6 AM - 1 PM PST).
         
+        Can be disabled by setting ENABLE_TRADING_HOURS_CHECK=false environment variable
+        to allow the service to run 24/7.
+        
         Returns:
-            True if within trading hours, False otherwise.
+            True if within trading hours (or if check is disabled), False otherwise.
         """
+        # Check if trading hours check is disabled
+        enable_check = os.getenv('ENABLE_TRADING_HOURS_CHECK', 'true').lower()
+        if enable_check == 'false':
+            logger.info("Trading hours check is DISABLED - running 24/7")
+            return True
+        
         from datetime import timezone, timedelta
         
         # PST is UTC-8, PDT is UTC-7. For simplicity, we'll use PST (UTC-8)
@@ -1557,21 +1576,32 @@ class RecommendationFlowService:
                     # Run the flow
                     await self.run_once()
                     
-                    # Wait for next interval with periodic heartbeat logging
+                    # Wait for next interval using wall-clock time (handles system sleep/suspend)
                     wait_seconds = self.SCHEDULE_INTERVAL_SECONDS
                     heartbeat_interval = 600  # Log heartbeat every 10 minutes
                     
+                    # Calculate target time using wall clock
+                    start_time = time.time()
+                    target_time = start_time + wait_seconds
+                    
                     logger.info(f"Next run in {wait_seconds / 3600:.1f} hours. Sleeping until next cycle...")
                     
-                    elapsed = 0
-                    while elapsed < wait_seconds and self._running:
-                        sleep_chunk = min(heartbeat_interval, wait_seconds - elapsed)
-                        await asyncio.sleep(sleep_chunk)
-                        elapsed += sleep_chunk
+                    while time.time() < target_time and self._running:
+                        # Calculate remaining time based on wall clock
+                        remaining_seconds = target_time - time.time()
+                        if remaining_seconds <= 0:
+                            break
                         
-                        if elapsed < wait_seconds:
-                            remaining = (wait_seconds - elapsed) / 60
-                            logger.info(f"Heartbeat: {elapsed // 60:.0f} min elapsed, {remaining:.0f} min remaining until next run")
+                        # Sleep for heartbeat interval or remaining time, whichever is smaller
+                        sleep_chunk = min(heartbeat_interval, remaining_seconds)
+                        await asyncio.sleep(sleep_chunk)
+                        
+                        # Log heartbeat with wall-clock based timing
+                        remaining_seconds = target_time - time.time()
+                        if remaining_seconds > 0 and self._running:
+                            elapsed_min = (time.time() - start_time) / 60
+                            remaining_min = remaining_seconds / 60
+                            logger.info(f"Heartbeat: {elapsed_min:.0f} min elapsed, {remaining_min:.0f} min remaining until next run")
                     
                     logger.info("Sleep completed, starting next recommendation cycle...")
                 else:
@@ -1581,16 +1611,24 @@ class RecommendationFlowService:
                     
                     logger.info(f"Outside trading hours. Waiting {wait_hours:.1f} hours until next trading window (6 AM PST)...")
                     
-                    # Sleep until trading hours, with periodic heartbeat
+                    # Sleep until trading hours using wall-clock time (handles system sleep/suspend)
+                    start_time = time.time()
+                    target_time = start_time + wait_seconds
                     heartbeat_interval = 1800  # Log every 30 minutes during off-hours
-                    elapsed = 0
-                    while elapsed < wait_seconds and self._running:
-                        sleep_chunk = min(heartbeat_interval, wait_seconds - elapsed)
-                        await asyncio.sleep(sleep_chunk)
-                        elapsed += sleep_chunk
+                    
+                    while time.time() < target_time and self._running:
+                        # Calculate remaining time based on wall clock
+                        remaining_seconds = target_time - time.time()
+                        if remaining_seconds <= 0:
+                            break
                         
-                        if elapsed < wait_seconds:
-                            remaining_hours = (wait_seconds - elapsed) / 3600
+                        sleep_chunk = min(heartbeat_interval, remaining_seconds)
+                        await asyncio.sleep(sleep_chunk)
+                        
+                        # Log heartbeat with wall-clock based timing
+                        remaining_seconds = target_time - time.time()
+                        if remaining_seconds > 0 and self._running:
+                            remaining_hours = remaining_seconds / 3600
                             logger.info(f"Off-hours heartbeat: {remaining_hours:.1f} hours until trading window opens")
                     
                     logger.info("Trading hours starting, beginning recommendation cycle...")
@@ -1684,11 +1722,22 @@ async def main(run_once: bool = False):
     - WATCHLIST_SYMBOLS: Comma-separated list of stock symbols
     - CLICKHOUSE_HOST: ClickHouse server for news features
     - REDIS_URL: Redis for caching
+    - ENABLE_TRADING_HOURS_CHECK: Set to 'false' to run 24/7 (default: 'true')
+    - SCHEDULE_INTERVAL_SECONDS: Interval between runs (default: 7200 = 2 hours)
     
     Args:
         run_once: If True, run once and exit. If False, run on schedule.
     """
     service = RecommendationFlowService()
+    
+    # Set up signal handlers for graceful shutdown
+    def handle_signal(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name} signal, initiating graceful shutdown...")
+        service.stop()
+    
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
     
     try:
         await service.initialize()
@@ -1703,11 +1752,15 @@ async def main(run_once: bool = False):
             if result.get('errors'):
                 print(f"   Errors: {len(result.get('errors', []))}")
         else:
+            logger.info("Recommendation service starting in scheduled mode...")
             await service.start_scheduled()
     except KeyboardInterrupt:
-        logger.info("Received interrupt signal")
+        logger.info("Received keyboard interrupt")
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}", exc_info=True)
     finally:
         service.stop()
+        logger.info("Recommendation service shutdown complete")
         await service.close()
 
 
@@ -1756,6 +1809,121 @@ async def run_http_server():
                 status_code=500
             )
     
+    @app.get("/regime/{symbol}")
+    async def get_regime(symbol: str):
+        """
+        Get the current market regime classification for a symbol.
+        
+        Returns regime classification across 4 dimensions:
+        - Volatility: low / normal / high / extreme
+        - Trend: strong_uptrend / uptrend / mean_reverting / choppy / downtrend / strong_downtrend
+        - Liquidity: high / normal / thin / illiquid
+        - Information: quiet / normal / news_driven / social_driven / earnings
+        
+        Also returns:
+        - Signal weights optimized for current regime
+        - Position sizing recommendations
+        - Stop-loss recommendations
+        """
+        symbol = symbol.upper()
+        
+        try:
+            engine = await get_engine()
+            
+            # Get features for regime classification
+            news_features = None
+            if engine.news_provider:
+                try:
+                    news_features = await engine.news_provider.get_features_single(symbol)
+                except Exception as e:
+                    logger.warning(f"Failed to get news features for {symbol}: {e}")
+            
+            technical_features = None
+            if engine.technical_provider:
+                try:
+                    technical_features = await engine.technical_provider.get_features(symbol)
+                except Exception as e:
+                    logger.warning(f"Failed to get technical features for {symbol}: {e}")
+            
+            # Classify regime
+            if not engine.regime_classifier:
+                return JSONResponse(
+                    content={"error": "Regime classification not available"},
+                    status_code=503
+                )
+            
+            regime_state = engine.regime_classifier.classify(
+                symbol=symbol,
+                technical_features=technical_features,
+                news_features=news_features,
+            )
+            
+            regime_weights = engine.regime_classifier.get_signal_weights(regime_state)
+            regime_explanation = engine.regime_classifier.get_regime_explanation(regime_state)
+            
+            # Build response
+            regime_info = {
+                "regime_label": regime_explanation.get("regime_label", "Unknown"),
+                "risk_level": regime_explanation.get("risk_level", "normal"),
+                "volatility": regime_state.volatility.value,
+                "trend": regime_state.trend.value,
+                "liquidity": regime_state.liquidity.value,
+                "information": regime_state.information.value,
+                "risk_score": round(regime_state.regime_risk_score, 3),
+                "regime_confidence": round(regime_state.regime_confidence, 3),
+                "warnings": regime_explanation.get("warnings", []),
+                "explanations": regime_explanation.get("explanations", []),
+            }
+            
+            signal_weights_info = {
+                "news_sentiment": round(regime_weights.news_sentiment, 4),
+                "news_momentum": round(regime_weights.news_momentum, 4),
+                "technical_trend": round(regime_weights.technical_trend, 4),
+                "technical_momentum": round(regime_weights.technical_momentum, 4),
+                "confidence_multiplier": round(regime_weights.confidence_multiplier, 3),
+                "trade_frequency_modifier": round(regime_weights.trade_frequency_modifier, 3),
+            }
+            
+            # Add position sizing info
+            if regime_weights.position_sizing:
+                ps = regime_weights.position_sizing
+                signal_weights_info["position_sizing"] = {
+                    "size_multiplier": round(ps.size_multiplier, 3),
+                    "max_position_percent": round(ps.max_position_percent, 2),
+                    "scale_in_entries": ps.scale_in_entries,
+                    "scale_in_interval_hours": ps.scale_in_interval_hours,
+                    "risk_per_trade_percent": round(ps.risk_per_trade_percent, 3),
+                    "reasoning": ps.reasoning,
+                }
+            
+            # Add stop-loss info
+            if regime_weights.stop_loss:
+                sl = regime_weights.stop_loss
+                signal_weights_info["stop_loss"] = {
+                    "atr_multiplier": round(sl.atr_multiplier, 2),
+                    "percent_from_entry": round(sl.percent_from_entry, 2),
+                    "use_trailing_stop": sl.use_trailing_stop,
+                    "trailing_activation_percent": round(sl.trailing_activation_percent, 2),
+                    "take_profit_atr_multiplier": round(sl.take_profit_atr_multiplier, 2),
+                    "risk_reward_ratio": round(sl.risk_reward_ratio, 2),
+                    "time_stop_days": sl.time_stop_days,
+                    "reasoning": sl.reasoning,
+                }
+            
+            return {
+                "symbol": symbol,
+                "regime": regime_info,
+                "signal_weights": signal_weights_info,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get regime for {symbol}: {e}")
+            return JSONResponse(
+                content={"error": str(e)},
+                status_code=500
+            )
+    
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
@@ -1787,6 +1955,80 @@ async def run_with_api():
                 content={"success": True, "message": "Recommendation generation started"},
                 status_code=202
             )
+        
+        @app.get("/regime/{symbol}")
+        async def get_regime_api(symbol: str):
+            """Get regime classification for a symbol."""
+            symbol = symbol.upper()
+            try:
+                engine = await get_engine()
+                
+                news_features = None
+                if engine.news_provider:
+                    try:
+                        news_features = await engine.news_provider.get_features_single(symbol)
+                    except Exception as e:
+                        logger.warning(f"Failed to get news features for {symbol}: {e}")
+                
+                technical_features = None
+                if engine.technical_provider:
+                    try:
+                        technical_features = await engine.technical_provider.get_features(symbol)
+                    except Exception as e:
+                        logger.warning(f"Failed to get technical features for {symbol}: {e}")
+                
+                if not engine.regime_classifier:
+                    return JSONResponse(content={"error": "Regime not available"}, status_code=503)
+                
+                regime_state = engine.regime_classifier.classify(symbol, technical_features, news_features)
+                regime_weights = engine.regime_classifier.get_signal_weights(regime_state)
+                regime_explanation = engine.regime_classifier.get_regime_explanation(regime_state)
+                
+                response = {
+                    "symbol": symbol,
+                    "regime": {
+                        "label": regime_explanation.get("regime_label"),
+                        "risk_level": regime_explanation.get("risk_level"),
+                        "volatility": regime_state.volatility.value,
+                        "trend": regime_state.trend.value,
+                        "liquidity": regime_state.liquidity.value,
+                        "information": regime_state.information.value,
+                        "risk_score": round(regime_state.regime_risk_score, 3),
+                        "warnings": regime_explanation.get("warnings", []),
+                    },
+                    "signal_weights": {
+                        "news_sentiment": round(regime_weights.news_sentiment, 4),
+                        "news_momentum": round(regime_weights.news_momentum, 4),
+                        "technical_trend": round(regime_weights.technical_trend, 4),
+                        "technical_momentum": round(regime_weights.technical_momentum, 4),
+                        "confidence_multiplier": round(regime_weights.confidence_multiplier, 3),
+                    },
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                
+                if regime_weights.position_sizing:
+                    ps = regime_weights.position_sizing
+                    response["position_sizing"] = {
+                        "size_multiplier": round(ps.size_multiplier, 3),
+                        "max_position_percent": round(ps.max_position_percent, 2),
+                        "scale_in_entries": ps.scale_in_entries,
+                        "reasoning": ps.reasoning,
+                    }
+                
+                if regime_weights.stop_loss:
+                    sl = regime_weights.stop_loss
+                    response["stop_loss"] = {
+                        "atr_multiplier": round(sl.atr_multiplier, 2),
+                        "percent_from_entry": round(sl.percent_from_entry, 2),
+                        "use_trailing_stop": sl.use_trailing_stop,
+                        "risk_reward_ratio": round(sl.risk_reward_ratio, 2),
+                        "reasoning": sl.reasoning,
+                    }
+                
+                return response
+            except Exception as e:
+                logger.error(f"Failed to get regime for {symbol}: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
         
         # Run both the scheduler and HTTP server
         async def run_scheduler():

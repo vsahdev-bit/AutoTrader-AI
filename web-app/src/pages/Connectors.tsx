@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { connectorApi, llmConnectorApi, healthCheckSettingsApi } from '../services/api'
 import { ConnectorStatus } from '../types'
 import Header from '../components/Header'
@@ -48,7 +47,6 @@ export default function Connectors() {
   const [llmLastUpdated, setLlmLastUpdated] = useState<string | null>(null)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
   const [llmRefreshMessage, setLlmRefreshMessage] = useState<string | null>(null)
-  const navigate = useNavigate()
 
   // Default connectors list (fallback when API is unavailable)
   // When API is connected, this is replaced with real data from the database
@@ -274,22 +272,6 @@ export default function Connectors() {
     disabled: connectors.filter(c => c.status === 'disabled').length,
     unknown: connectors.filter(c => c.status === 'unknown').length,
     total: connectors.length,
-  }
-
-  // Format relative time
-  const formatRelativeTime = (isoString: string | null) => {
-    if (!isoString) return 'Never'
-    const date = new Date(isoString)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-    const diffHours = Math.floor(diffMins / 60)
-    const diffDays = Math.floor(diffHours / 24)
-
-    if (diffMins < 1) return 'Just now'
-    if (diffMins < 60) return `${diffMins}m ago`
-    if (diffHours < 24) return `${diffHours}h ago`
-    return `${diffDays}d ago`
   }
 
   return (

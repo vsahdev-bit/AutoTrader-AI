@@ -10,12 +10,91 @@
  * 
  * Type Categories:
  * - Recommendation: AI-generated trading signals
+ * - Regime: Market regime classification
  * - UserConfig: User preferences and risk settings
  * - SessionInfo: Authentication state
  * - ConnectorStatus: Data connector health status
  * 
  * @see services/api.ts for API functions using these types
  */
+
+/**
+ * RegimeInfo - Market regime classification for a symbol.
+ * 
+ * The regime model classifies market conditions across 4 dimensions
+ * and adapts signal weights, position sizing, and stop-loss recommendations.
+ */
+export interface RegimeInfo {
+  /** Human-readable regime label (e.g., "Volatile / Bearish / Earnings") */
+  label: string
+  /** Overall risk level: "normal" or "high" */
+  risk_level: 'normal' | 'high'
+  /** Volatility regime: low, normal, high, extreme */
+  volatility: 'low' | 'normal' | 'high' | 'extreme'
+  /** Trend regime */
+  trend: 'strong_uptrend' | 'uptrend' | 'mean_reverting' | 'choppy' | 'downtrend' | 'strong_downtrend'
+  /** Liquidity regime */
+  liquidity: 'high' | 'normal' | 'thin' | 'illiquid'
+  /** Information/news regime */
+  information: 'quiet' | 'normal' | 'news_driven' | 'social_driven' | 'earnings'
+  /** Risk score from 0 to 1 (higher = riskier) */
+  risk_score: number
+  /** Warnings for current regime */
+  warnings: string[]
+}
+
+/**
+ * PositionSizingInfo - Position sizing recommendation based on regime.
+ */
+export interface PositionSizingInfo {
+  /** Position size multiplier (1.0 = standard, 0.5 = half size) */
+  size_multiplier: number
+  /** Maximum position as % of portfolio */
+  max_position_percent: number
+  /** Number of entries to scale in */
+  scale_in_entries: number
+  /** Explanation for sizing recommendation */
+  reasoning: string
+}
+
+/**
+ * StopLossInfo - Stop-loss recommendation based on regime.
+ */
+export interface StopLossInfo {
+  /** Stop-loss as ATR multiplier */
+  atr_multiplier: number
+  /** Stop-loss as % from entry */
+  percent_from_entry: number
+  /** Whether to use trailing stop */
+  use_trailing_stop: boolean
+  /** Target risk:reward ratio */
+  risk_reward_ratio: number
+  /** Explanation for stop-loss recommendation */
+  reasoning: string
+}
+
+/**
+ * SignalWeightsInfo - Regime-adaptive signal weights.
+ */
+export interface SignalWeightsInfo {
+  news_sentiment: number
+  news_momentum: number
+  technical_trend: number
+  technical_momentum: number
+  confidence_multiplier: number
+}
+
+/**
+ * RegimeResponse - Full regime classification response from API.
+ */
+export interface RegimeResponse {
+  symbol: string
+  regime: RegimeInfo
+  signal_weights: SignalWeightsInfo
+  position_sizing?: PositionSizingInfo
+  stop_loss?: StopLossInfo
+  timestamp: string
+}
 
 /**
  * Recommendation - AI-generated trading recommendation for a stock.
@@ -72,8 +151,16 @@ export interface Recommendation {
   explanation: {
     /** Human-readable summary of why this action is recommended */
     summary: string
+    /** LLM-generated detailed analysis */
+    llm_analysis?: string
+    /** Overall recommendation score (-1 to 1) */
+    score?: number
+    /** Recommendation action */
+    action?: string
+    /** Key factors driving the recommendation */
+    factors?: string[]
     /** Individual signal contributions to the recommendation */
-    signals: {
+    signals?: {
       /** Relative Strength Index (0-100, oversold <30, overbought >70) */
       rsi?: number
       /** News sentiment score (-1 to 1, negative to positive) */
@@ -81,6 +168,29 @@ export interface Recommendation {
       /** Social media momentum indicator */
       socialMomentum?: number
     }
+    /** News analytics data */
+    news?: {
+      articles_24h?: number
+      articles_7d?: number
+      sentiment_1d?: number
+      sentiment_trend?: string
+    }
+    /** Technical analysis data */
+    technical?: {
+      price?: number
+      change_1d?: string
+      change_5d?: string
+      rsi?: number
+      trend?: string
+      volatility?: string
+    }
+    /** Recent news articles with links */
+    recent_articles?: {
+      title: string
+      source: string
+      sentiment: string
+      url?: string
+    }[]
   }
 }
 
@@ -239,6 +349,7 @@ export interface StockRecommendationHistory {
       title: string
       source: string
       sentiment: string
+      url?: string
     }[]
     /** LLM-powered detailed analysis */
     llm_analysis?: string

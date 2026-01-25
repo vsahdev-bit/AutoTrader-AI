@@ -822,7 +822,7 @@ class TechnicalFeatureProvider:
         days = period_map.get(period, 180)
         start_date = end_date - timedelta(days=days)
         
-        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
+        url = f"https://api.massive.com/v2/aggs/ticker/{symbol}/range/1/day/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
         params = {"apiKey": api_key, "adjusted": "true", "sort": "asc", "limit": 500}
         
         try:

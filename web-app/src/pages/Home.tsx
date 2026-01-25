@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { GoogleLogin, CredentialResponse } from '@react-oauth/google'
 import { useAuth } from '../context/AuthContext'
 import { isGoogleOAuthConfigured } from '../config/google'
@@ -62,9 +62,9 @@ export default function Home() {
             {/* Navigation */}
             <nav className="hidden md:flex items-center gap-8">
               <a href="#features" className="text-gray-600 hover:text-gray-900 font-medium">Features</a>
-              <a href="#pricing" className="text-gray-600 hover:text-gray-900 font-medium">Pricing</a>
+              <Link to="/pricing" className="text-gray-600 hover:text-gray-900 font-medium">Pricing</Link>
               <a href="#testimonials" className="text-gray-600 hover:text-gray-900 font-medium">Testimonials</a>
-              <a href="#faq" className="text-gray-600 hover:text-gray-900 font-medium">FAQ</a>
+              <Link to="/faq" className="text-gray-600 hover:text-gray-900 font-medium">FAQ</Link>
             </nav>
 
             {/* CTA */}
@@ -344,12 +344,10 @@ function Footer() {
           <div>
             <h3 className="text-lg font-semibold mb-6">Site</h3>
             <ul className="space-y-3">
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">About</a></li>
               <li><a href="#features" className="text-gray-400 hover:text-white transition-colors">Features</a></li>
-              <li><a href="#pricing" className="text-gray-400 hover:text-white transition-colors">Pricing</a></li>
+              <li><Link to="/pricing" className="text-gray-400 hover:text-white transition-colors">Pricing</Link></li>
               <li><a href="#testimonials" className="text-gray-400 hover:text-white transition-colors">Testimonials</a></li>
-              <li><a href="#faq" className="text-gray-400 hover:text-white transition-colors">FAQ</a></li>
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Blog</a></li>
+              <li><Link to="/faq" className="text-gray-400 hover:text-white transition-colors">FAQ</Link></li>
             </ul>
           </div>
 
@@ -370,11 +368,9 @@ function Footer() {
           <div>
             <h3 className="text-lg font-semibold mb-6">Legal</h3>
             <ul className="space-y-3">
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Terms of Service</a></li>
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Privacy Policy</a></li>
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Cookie Policy</a></li>
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Risk Disclosure</a></li>
-              <li><a href="#" className="text-gray-400 hover:text-white transition-colors">Refund Policy</a></li>
+              <li><Link to="/terms" className="text-gray-400 hover:text-white transition-colors">Terms of Service</Link></li>
+              <li><Link to="/privacy" className="text-gray-400 hover:text-white transition-colors">Privacy Policy</Link></li>
+              <li><Link to="/risk-disclosure" className="text-gray-400 hover:text-white transition-colors">Risk Disclosure</Link></li>
             </ul>
             
             {/* Trust Badges */}
@@ -418,7 +414,7 @@ function Footer() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <p className="text-xs text-gray-600 text-center">
             <strong>Risk Disclaimer:</strong> Trading stocks, options, and cryptocurrencies involves substantial risk of loss and is not suitable for all investors. 
-            Past performance does not guarantee future results. Please read our full risk disclosure before using our services.
+            Past performance does not guarantee future results. Please read our <Link to="/risk-disclosure" className="text-blue-400 hover:underline">full risk disclosure</Link> before using our services.
           </p>
         </div>
       </div>

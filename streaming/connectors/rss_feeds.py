@@ -40,50 +40,53 @@ logger = logging.getLogger(__name__)
 
 # RSS Feed definitions with their URLs and parsing info
 RSS_FEEDS = {
-    "reuters_business": {
-        "url": "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
-        "source": NewsSource.RSS_REUTERS,
-        "source_name": "Reuters",
-    },
-    "reuters_markets": {
-        "url": "https://www.reutersagency.com/feed/?best-topics=markets&post_type=best",
-        "source": NewsSource.RSS_REUTERS,
-        "source_name": "Reuters",
-    },
-    "yahoo_finance": {
-        "url": "https://finance.yahoo.com/news/rssindex",
-        "source": NewsSource.RSS_YAHOO,
-        "source_name": "Yahoo Finance",
-    },
-    "cnbc_top": {
-        "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-        "source": NewsSource.RSS_CNBC,
-        "source_name": "CNBC",
-    },
-    "cnbc_finance": {
-        "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-        "source": NewsSource.RSS_CNBC,
-        "source_name": "CNBC Finance",
-    },
-    "marketwatch_top": {
-        "url": "http://feeds.marketwatch.com/marketwatch/topstories/",
-        "source": NewsSource.RSS_YAHOO,  # Using YAHOO as generic RSS
-        "source_name": "MarketWatch",
-    },
-    "marketwatch_stocks": {
-        "url": "http://feeds.marketwatch.com/marketwatch/marketpulse/",
-        "source": NewsSource.RSS_YAHOO,
-        "source_name": "MarketWatch",
-    },
+    # Seeking Alpha - Market Currents (reliable, good financial news)
     "seeking_alpha_market": {
         "url": "https://seekingalpha.com/market_currents.xml",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Seeking Alpha",
     },
-    "investing_news": {
-        "url": "https://www.investing.com/rss/news.rss",
+    # Seeking Alpha - Wall Street Breakfast
+    "seeking_alpha_wsb": {
+        "url": "https://seekingalpha.com/tag/wall-st-breakfast.xml",
         "source": NewsSource.RSS_YAHOO,
-        "source_name": "Investing.com",
+        "source_name": "Seeking Alpha WSB",
+    },
+    # MarketWatch Top Stories (using Dow Jones CDN)
+    "marketwatch_top": {
+        "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "MarketWatch",
+    },
+    # MarketWatch Market Pulse (using Dow Jones CDN)
+    "marketwatch_stocks": {
+        "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "MarketWatch",
+    },
+    # Investing.com - Stock News
+    "investing_stock_news": {
+        "url": "https://www.investing.com/rss/news_301.rss",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "Investing.com Stocks",
+    },
+    # Investing.com - Economy
+    "investing_economy": {
+        "url": "https://www.investing.com/rss/news_14.rss",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "Investing.com Economy",
+    },
+    # The Motley Fool
+    "motley_fool": {
+        "url": "https://www.fool.com/feeds/index.aspx",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "Motley Fool",
+    },
+    # Business Insider Markets
+    "business_insider": {
+        "url": "https://markets.businessinsider.com/rss/news",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "Business Insider Markets",
     },
 }
 
@@ -176,8 +179,9 @@ class RSSFeedConnector(BaseNewsConnector):
                 continue
             all_articles.extend(result)
         
-        # Filter by time
-        articles = [a for a in all_articles if a.published_at >= since]
+        # Filter by time - handle timezone-aware vs naive datetime comparison
+        since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+        articles = [a for a in all_articles if a.published_at.replace(tzinfo=None) >= since_naive]
         
         # Filter by symbols if provided
         if symbols:

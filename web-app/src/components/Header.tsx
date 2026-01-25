@@ -27,9 +27,9 @@ export default function Header() {
   const location = useLocation()
   const { user, logout } = useAuth()
 
-  const handleLogout = async () => {
-    await logout()
-    navigate('/login')
+  const handleLogout = () => {
+    logout()
+    navigate('/')
   }
 
   const isActive = (path: string) => {
@@ -37,7 +37,7 @@ export default function Header() {
   }
 
   return (
-    <header className="bg-white shadow sticky top-0 z-20">
+    <header className="bg-white shadow sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center">
           {/* Logo and Navigation */}

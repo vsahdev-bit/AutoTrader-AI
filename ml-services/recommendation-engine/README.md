@@ -1,388 +1,476 @@
-# Recommendation Engine
+# How the Recommendation Service Works
 
 ## Overview
 
-The recommendation engine generates AI-powered trading recommendations for stocks in a user's watchlist. It runs automatically every 2 hours and combines news sentiment analysis with technical indicators to produce actionable BUY, SELL, or HOLD recommendations.
+The recommendation service analyzes stocks by combining **news sentiment**, **technical indicators**, and **market regime classification** to generate BUY/HOLD/SELL recommendations with confidence scores.
 
-## How the Raw Recommendation Score is Calculated
+**Key Innovation: Regime-Adaptive Signal Weighting**
 
-### Architecture Overview
+The engine now classifies market conditions and adapts its behavior accordingly. The same signal (e.g., RSI oversold) can result in different actions depending on the market regime:
 
-The recommendation system uses a **weighted scoring model** that combines **News Sentiment Analysis** and **Technical Indicators**. The current implementation uses a **rule-based scoring system** with the LLM used specifically for sentiment analysis of news articles.
-
----
-
-## 1. Input Signals (4 Component Scores)
-
-The system calculates 4 component scores, each ranging from **-1 to +1**:
-
-| Component | Weight | Source | What it Measures |
-|-----------|--------|--------|------------------|
-| **News Sentiment** | 30% | NewsFeatureProvider (ClickHouse) | Recent news sentiment direction |
-| **News Momentum** | 20% | NewsFeatureProvider | Is sentiment improving or declining |
-| **Technical Trend** | 25% | TechnicalFeatureProvider | Price trend using MAs and MACD |
-| **Technical Momentum** | 25% | TechnicalFeatureProvider | RSI, Stochastic, mean-reversion signals |
+| Signal | Regime | Result |
+|--------|--------|--------|
+| RSI oversold + Positive sentiment | Low vol, mean-reverting | **BUY** (high confidence) |
+| RSI oversold + Positive sentiment | High vol, news shock | **HOLD** (low confidence) |
+| RSI oversold + Positive sentiment | Choppy, social-driven | **SKIP** (very low confidence) |
 
 ---
 
-## 2. News Sentiment Score Calculation
+## Decision Flow
 
-```python
-def _calculate_news_sentiment_score(news_features) -> float:
-    # Uses 1-day sentiment as primary signal
-    sentiment = news_features.sentiment_1d  # Range: -1 to +1
-    
-    # Adjust by confidence (weight higher confidence sentiment more)
-    confidence_factor = 0.5 + (news_features.avg_confidence_1d * 0.5)
-    
-    return sentiment * confidence_factor  # Final range: -1 to +1
 ```
-
-**Data Sources:**
-- News articles from ClickHouse (ingested from NewsAPI, Benzinga, Alpha Vantage, RSS feeds)
-- Each article has a sentiment score from the **LLM-based sentiment analyzer**
-
----
-
-## 3. News Momentum Score Calculation
-
-```python
-def _calculate_news_momentum_score(news_features) -> float:
-    # Momentum = change in sentiment (1d - 3d)
-    momentum = news_features.sentiment_momentum
-    
-    # Scale momentum (0.1 change is significant)
-    scaled_momentum = max(-1.0, min(1.0, momentum * 5))
-    
-    return scaled_momentum
-```
-
-**What it captures:** Is sentiment getting better or worse over time.
-
----
-
-## 4. Technical Trend Score Calculation
-
-```python
-def _calculate_technical_trend_score(technical_features) -> float:
-    score = 0.0
-    signals = 0
-    
-    # Price vs SMA20 (short-term trend)
-    if price_vs_sma20 > 0.02:   score += 0.5  # Above 20-day MA = bullish
-    elif price_vs_sma20 < -0.02: score -= 0.5  # Below = bearish
-    
-    # Price vs SMA50 (medium-term trend)
-    if price_vs_sma50 > 0.03:   score += 0.5
-    elif price_vs_sma50 < -0.03: score -= 0.5
-    
-    # MACD histogram (momentum of trend)
-    if macd_histogram_normalized > 0.001:  score += 0.5
-    elif macd_histogram_normalized < -0.001: score -= 0.5
-    
-    # SMA crossover (golden/death cross)
-    if sma20_vs_sma50 > 0.01:  score += 0.3
-    elif sma20_vs_sma50 < -0.01: score -= 0.3
-    
-    return normalize(score / signals)  # Range: -1 to +1
+Raw Data → Feature Engineering → Regime Classification → Signal Weighting (by regime)
+→ Expected Value Estimation → Confidence Scoring → Ranked Recommendations
 ```
 
 ---
 
-## 5. Technical Momentum Score Calculation
+## Step-by-Step Workflow
 
-```python
-def _calculate_technical_momentum_score(technical_features) -> float:
-    score = 0.0
-    
-    # RSI - contrarian signal
-    if rsi < 0.30:  score += 0.6   # Oversold = BUY signal
-    if rsi > 0.70:  score -= 0.6   # Overbought = SELL signal
-    
-    # Stochastic - similar contrarian logic
-    if stochastic_k < 0.20: score += 0.4
-    if stochastic_k > 0.80: score -= 0.4
-    
-    # ROC (Rate of Change)
-    if roc > 0.05:  score += 0.4   # Strong upward momentum
-    if roc < -0.05: score -= 0.4   # Strong downward momentum
-    
-    # Bollinger Band position
-    if bb_position < 0.1: score += 0.3  # Near lower band = potential bounce
-    if bb_position > 0.9: score -= 0.3  # Near upper band = potential pullback
-    
-    return normalize(score / signals)  # Range: -1 to +1
+### 1. **Data Collection**
+
+The service collects data from two main categories:
+
+#### News Data (from ClickHouse)
+- News articles are fetched from multiple connectors:
+  - **Polygon** - Financial news
+  - **Finnhub** - Market news
+  - **NewsAPI** - General news
+  - **Benzinga** - Trading news
+  - **FMP** - Market articles
+- Articles are stored in ClickHouse with sentiment scores
+- The service queries articles from the last 14 days for the requested symbol
+
+#### Technical Data (from Polygon API - api.massive.com)
+- **Price data**: Open, High, Low, Close, Volume
+- **Historical prices**: Last 60 days of daily data
+- Used to calculate technical indicators
+
+---
+
+### 2. **News Feature Extraction**
+
+The service calculates these news-based features:
+
+| Feature | Description | How It's Calculated |
+|---------|-------------|---------------------|
+| `news_sentiment_score` | Overall sentiment | Weighted average of article sentiments (recent articles weighted more) |
+| `news_sentiment_1d` | 24-hour sentiment | Average sentiment of articles from last 24 hours |
+| `news_momentum_score` | Sentiment trend | Compares recent sentiment (3 days) vs older sentiment (7 days) |
+| `article_count_24h` | News volume | Count of articles in last 24 hours |
+
+**Sentiment Values:**
+- Bullish: +0.5 to +1.0
+- Neutral: -0.1 to +0.1
+- Bearish: -0.5 to -1.0
+
+---
+
+### 3. **Technical Feature Extraction**
+
+The service calculates these technical indicators from price data:
+
+| Indicator | Description | Calculation |
+|-----------|-------------|-------------|
+| **RSI** | Relative Strength Index | Measures overbought (>70) or oversold (<30) conditions |
+| **MACD** | Moving Average Convergence Divergence | Difference between 12-day and 26-day EMAs |
+| **SMA20** | 20-day Simple Moving Average | Average price over 20 days |
+| **Price vs SMA20** | Price position | How far current price is from 20-day average |
+| **Volatility** | Price swings | Standard deviation of returns |
+| **1D/5D Change** | Recent momentum | Price change over 1 and 5 days |
+
+From these, it derives:
+
+| Score | Description | How It's Calculated |
+|-------|-------------|---------------------|
+| `technical_trend_score` | Price trend direction | Based on price vs moving averages and recent changes |
+| `technical_momentum_score` | Momentum strength | Based on RSI and MACD signals |
+
+---
+
+### 4. **Sentiment Analysis with LLM**
+
+When news articles are ingested (via the News Ingestion Service), each article's sentiment is analyzed:
+
+```
+Article Title + Content
+        ↓
+   LLM Analysis (Anthropic/Groq with OpenAI fallback)
+        ↓
+   Returns: {score: 0.7, label: "bullish", confidence: 0.85}
+```
+
+**LLM Prompt** (simplified):
+```
+Analyze the sentiment of this financial news article.
+Return a score from -1 (very bearish) to +1 (very bullish),
+a label (very_bearish, bearish, neutral, bullish, very_bullish),
+and your confidence level.
 ```
 
 ---
 
-## 6. Combined Score Formula
+### 5. **Regime Classification** (NEW)
+
+Before combining signals, the engine classifies the current market regime across 4 dimensions:
+
+#### Regime Dimensions
+
+| Dimension | States | Detection Method |
+|-----------|--------|------------------|
+| **Volatility** | Low / Normal / High / Extreme | Volatility z-score, Bollinger Band width |
+| **Trend** | Strong Uptrend / Uptrend / Mean-Reverting / Choppy / Downtrend / Strong Downtrend | Price vs SMAs, MACD, trend strength |
+| **Liquidity** | High / Normal / Thin / Illiquid | Volume ratio vs average |
+| **Information** | Quiet / Normal / News-Driven / Social-Driven / Earnings | News velocity, social mentions |
+
+#### How Regime Affects Recommendations
+
+The regime does NOT decide BUY/SELL directly. It controls:
+
+| Aspect | Effect |
+|--------|--------|
+| **Signal weights** | Tech vs news vs social emphasis |
+| **Confidence scaling** | Penalize bad regime fits |
+| **Trade frequency** | Fewer trades in chaotic markets |
+| **Action thresholds** | Stricter in risky regimes |
+| **Explanation tone** | "High-risk setup" warnings |
+
+#### Regime-Specific Threshold Adjustments
 
 ```python
+# Examples of threshold adjustments by regime:
+"extreme_volatility": {"buy_adjust": +0.15, "sell_adjust": -0.10}  # Much stricter
+"strong_uptrend":     {"buy_adjust": -0.10, "sell_adjust": +0.10}  # Easier to buy
+"choppy":             {"buy_adjust": +0.15, "sell_adjust": -0.05}  # Much stricter for buy
+"illiquid":           {"buy_adjust": +0.15, "sell_adjust": -0.10}  # Much stricter
+```
+
+---
+
+### 6. **Score Combination with Regime Weights**
+
+The final recommendation score combines news and technical signals using **regime-adaptive weights**:
+
+```
+                    News Signals                    Technical Signals
+                         ↓                                ↓
+              ┌─────────────────────┐         ┌─────────────────────┐
+              │ news_sentiment: 0.4 │         │ trend_score: -0.3   │
+              │ news_momentum: 0.1  │         │ momentum_score: 0.2 │
+              └─────────────────────┘         └─────────────────────┘
+                         ↓                                ↓
+                  Regime-Adjusted              Regime-Adjusted
+                    Weights                      Weights
+                         ↓                                ↓
+                         └────────────┬───────────────────┘
+                                      ↓
+                              Combined Score
+                              (e.g., 0.05)
+```
+
+**Default Weights (adjusted by regime):**
+- News Sentiment: 30%
+- News Momentum: 20%
+- Technical Trend: 25%
+- Technical Momentum: 25%
+
+**Regime Weight Adjustments:**
+- **Trending markets**: Technical trend signals weighted +30% higher
+- **Choppy markets**: All technical signals weighted lower, confidence reduced
+- **News-driven**: News sentiment weighted +50% higher
+- **High volatility**: Momentum signals reduced, confidence multiplier 0.7x
+- **Quiet markets**: Technical signals more reliable, weighted higher
+
+**Formula:**
+```python
+# Get regime-adjusted weights (normalized to sum to 1.0)
+weights = regime_classifier.get_signal_weights(regime_state)
+
 combined_score = (
-    news_sentiment_score * 0.30 +    # 30% weight
-    news_momentum_score * 0.20 +     # 20% weight
-    technical_trend_score * 0.25 +   # 25% weight
-    technical_momentum_score * 0.25  # 25% weight
-)
-# Result: -1 to +1
-```
-
----
-
-## 7. Action Determination
-
-```python
-BUY_THRESHOLD = 0.6   # Raw score > 0.6 → BUY (normalized > 80%)
-SELL_THRESHOLD = 0.0  # Raw score < 0.0 → SELL (normalized < 50%)
-
-if combined_score > 0.6:
-    action = "BUY"
-elif combined_score < 0.0:
-    action = "SELL"
-else:
-    action = "HOLD"
-```
-
----
-
-## 8. Confidence Score Calculation
-
-```python
-confidence = (
-    base_confidence (0.15) +
-    strength_confidence (0-0.4 based on |combined_score|) +
-    agreement_factor (+0.15 if news & technical agree, -0.10 if disagree) +
-    quality_score (0-0.3 based on data availability)
+    news_sentiment_score * weights.news_sentiment +
+    news_momentum_score * weights.news_momentum +
+    technical_trend_score * weights.technical_trend +
+    technical_momentum_score * weights.technical_momentum
 )
 ```
 
 ---
 
-## 9. Where LLM is Used
+### 7. **Normalized Score & Action**
 
-The **LLM (OpenAI/Anthropic/Groq)** is used in the **Sentiment Analysis Service** (`ml-services/sentiment-analysis/src/analyzer.py`) to:
-
-1. **Analyze news article text** and extract sentiment (-1 to +1)
-2. **Extract key entities** (companies, people, topics)
-3. **Determine relevance** to specific stocks
-
-The LLM is **NOT used** in:
-- The final recommendation calculation (rule-based)
-- Technical indicator computation (pure math)
-
----
-
-## Visual Summary
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DATA INGESTION                                │
-├─────────────────────────────────────────────────────────────────┤
-│  News Articles ─────────► LLM Sentiment ─────► ClickHouse       │
-│  (NewsAPI, Benzinga,      (OpenAI/Claude)      (sentiment_1d,   │
-│   Alpha Vantage, RSS)                          momentum, etc.)  │
-│                                                                  │
-│  Price Data ─────────────────────────────────► Yahoo/Polygon    │
-│  (Real-time quotes,                            (OHLCV data)     │
-│   historical prices)                                             │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  FEATURE ENGINEERING                             │
-├─────────────────────────────────────────────────────────────────┤
-│  NewsFeatureProvider:                                            │
-│    - sentiment_1d, sentiment_3d, sentiment_7d                   │
-│    - sentiment_momentum (1d - 3d)                               │
-│    - article_count, avg_confidence                              │
-│                                                                  │
-│  TechnicalFeatureProvider:                                       │
-│    - SMA (20, 50, 200)                                          │
-│    - RSI, MACD, Stochastic                                      │
-│    - Bollinger Bands, ATR, ROC                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              RECOMMENDATION ENGINE (Rule-Based)                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  combined_score = news_sentiment * 0.30                         │
-│                 + news_momentum * 0.20                          │
-│                 + technical_trend * 0.25                        │
-│                 + technical_momentum * 0.25                     │
-│                                                                  │
-│  if score > 0.6 → BUY                                           │
-│  if score < 0.0 → SELL                                          │
-│  else           → HOLD                                          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      OUTPUT                                      │
-├─────────────────────────────────────────────────────────────────┤
-│  {                                                               │
-│    "action": "BUY",                                             │
-│    "score": 0.72,                                               │
-│    "confidence": 0.85,                                          │
-│    "explanation": {...}                                         │
-│  }                                                               │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Understanding Raw Score vs Normalized Score vs Confidence
-
-These three metrics serve different purposes:
-
-| Metric | Range | What it Represents |
-|--------|-------|-------------------|
-| **Raw Score** | -1 to +1 | The weighted sum of all component signals |
-| **Normalized Score** | 0 to 1 | Raw score converted to a 0-100% scale for UI display |
-| **Confidence** | 0 to 1 | How reliable/trustworthy the recommendation is |
-
-### 1. Raw Score (-1 to +1)
-
-The raw score is the **actual recommendation signal** - it tells you the direction and strength of the recommendation.
+The combined score (-1 to +1) is normalized to 0-100%:
 
 ```python
-raw_score = (news_sentiment * 0.30) + (news_momentum * 0.20) 
-          + (technical_trend * 0.25) + (technical_momentum * 0.25)
+normalized_score = (combined_score + 1) / 2  # Maps -1→0, 0→0.5, +1→1
 ```
 
-**Interpretation:**
-- **+1.0** = Maximum bullish signal (strong BUY)
-- **0.0** = Neutral (HOLD)
-- **-1.0** = Maximum bearish signal (strong SELL)
+**Default Action Thresholds:**
+| Normalized Score | Action |
+|-----------------|--------|
+| > 80% | **BUY** |
+| 50% - 80% | **HOLD** |
+| < 50% | **SELL** |
 
-**Example:** A raw score of `0.72` means moderately strong bullish signals.
+**Regime-Adjusted Thresholds:**
 
-### 2. Normalized Score (0 to 1)
+The actual thresholds are adjusted based on regime. In risky regimes, stricter thresholds are used:
 
-The normalized score is simply the **raw score rescaled for display purposes**:
+| Regime | Buy Threshold (normalized) | Effect |
+|--------|---------------------------|--------|
+| Default | 80% | Normal |
+| Extreme Volatility | ~88% | Much stricter |
+| Strong Uptrend | ~75% | Easier to buy |
+| Choppy Market | ~88% | Much stricter |
+| Illiquid | ~88% | Much stricter |
+
+---
+
+### 8. **Confidence Calculation**
+
+Confidence reflects how reliable the recommendation is:
 
 ```python
-normalized_score = (raw_score + 1) / 2
+confidence = base_confidence
+
+# Boost if news and technical signals agree
+if news_score > 0 and technical_score > 0:  # Both bullish
+    confidence += 0.15
+elif news_score < 0 and technical_score < 0:  # Both bearish
+    confidence += 0.15
+
+# Reduce if signals conflict
+if (news_score > 0.2 and technical_score < -0.2) or vice versa:
+    confidence -= 0.10
+
+# Boost for high news volume
+if article_count_24h > 10:
+    confidence += 0.05
+
+# Apply REGIME confidence multiplier (NEW)
+confidence = confidence * regime_weights.confidence_multiplier
+# Multipliers: 1.1x for low vol, 0.7x for high vol, 0.4x for extreme vol
+
+# Cap between 0.0 and 1.0
+confidence = max(0.0, min(1.0, confidence))
 ```
 
-| Raw Score | Normalized Score | Display |
-|-----------|-----------------|---------|
-| -1.0 | 0.0 | 0% |
-| 0.0 | 0.5 | 50% |
-| +1.0 | 1.0 | 100% |
-| +0.72 | 0.86 | 86% |
+**Regime Confidence Multipliers:**
+| Regime | Multiplier | Effect |
+|--------|------------|--------|
+| Low Volatility | 1.1x | Slight boost |
+| Normal | 1.0x | No change |
+| High Volatility | 0.7x | Reduced |
+| Extreme Volatility | 0.4x | Significantly reduced |
+| Choppy Market | 0.8x | Reduced |
+| Social-Driven | 0.7x | Reduced (noise) |
 
-**Why normalize?** It's easier for users to understand "86% bullish" than "+0.72 on a -1 to +1 scale."
+---
 
-### 3. Confidence (0 to 1)
+### 9. **Explanation Generation**
 
-Confidence is **completely different** - it measures **how much you should trust the score**, not the score itself.
+The service generates a human-readable explanation:
 
 ```python
-confidence = (
-    base_confidence (0.15) +
-    strength_factor (0-0.4)   # Higher |score| = more confident
-    agreement_factor (±0.15)  # News & technical agree = more confident
-    data_quality (0-0.3)      # More data sources = more confident
-)
-```
-
-**High confidence scenarios:**
-- Strong signal (score far from 0)
-- News and technical indicators agree
-- Multiple data sources available
-- Recent, high-quality data
-
-**Low confidence scenarios:**
-- Weak signal (score near 0)
-- News says BUY but technicals say SELL
-- Limited data sources
-- Stale or missing data
-
-### Example Comparison
-
-| Scenario | Raw | Normalized | Confidence | Interpretation |
-|----------|-----|------------|------------|----------------|
-| Strong BUY, all signals agree | +0.85 | 92.5% | 0.92 | "Highly confident strong buy" |
-| Weak BUY, mixed signals | +0.25 | 62.5% | 0.45 | "Uncertain, leaning buy" |
-| Neutral, no data | 0.0 | 50% | 0.30 | "Don't know, low confidence" |
-| Strong SELL, conflicting | -0.70 | 15% | 0.55 | "Sell signal but conflicting data" |
-
-### How to Use Them Together
-
-```
-If normalized_score > 80% AND confidence > 0.7:
-    → Strong conviction BUY
-    
-If normalized_score > 80% AND confidence < 0.5:
-    → BUY signal but be cautious, data is uncertain
-    
-If normalized_score ~50% AND confidence > 0.8:
-    → Confidently neutral - no clear direction
+explanation = {
+    "summary": "Moderate bullish sentiment with mixed technical signals...",
+    "factors": [
+        "News sentiment is positive (0.41)",
+        "RSI indicates oversold conditions (9.4)",
+        "Price is below 20-day moving average"
+    ],
+    "news": {
+        "articles_24h": 67,
+        "sentiment_1d": 0.45,
+        "sentiment_trend": "stable"
+    },
+    "technical": {
+        "price": 247.65,
+        "change_1d": "+0.39%",
+        "rsi": 9.4,
+        "trend": "bearish"
+    },
+    "recent_articles": [
+        {"title": "Apple announces...", "source": "Finnhub", "sentiment": "positive"}
+    ]
+}
 ```
 
 ---
 
-## Recommendation Object Structure
+## Visual Flow Diagram
 
-Each recommendation stored in the database contains:
-
-| Field | Type | Description | Example |
-|-------|------|-------------|---------|
-| `id` | UUID | Unique identifier | `93a10f32-16f0-48e1-b37b-3f55c3dfa28f` |
-| `symbol` | VARCHAR | Stock ticker symbol | `AAPL` |
-| `action` | VARCHAR | Trading action (BUY, SELL, HOLD) | `BUY` |
-| `score` | NUMERIC | Raw recommendation score | `0.7200` |
-| `normalized_score` | NUMERIC | Normalized score (0-1) | `0.7200` |
-| `confidence` | NUMERIC | Confidence level (0-1) | `0.850` |
-| `price_at_recommendation` | NUMERIC | Stock price when generated | `255.53` |
-| **News Scores** | | | |
-| `news_sentiment_score` | NUMERIC | Overall news sentiment (-1 to 1) | `0.6500` |
-| `news_momentum_score` | NUMERIC | News momentum indicator | `0.7000` |
-| `news_sentiment_1d` | NUMERIC | 1-day news sentiment | `0.6200` |
-| `article_count_24h` | INTEGER | Articles in last 24 hours | `15` |
-| **Technical Scores** | | | |
-| `technical_trend_score` | NUMERIC | Technical trend indicator | `0.7500` |
-| `technical_momentum_score` | NUMERIC | Technical momentum | `0.6800` |
-| `rsi` | NUMERIC | Relative Strength Index | `0.5800` |
-| `macd_histogram` | NUMERIC | MACD histogram value | `0.00125` |
-| `price_vs_sma20` | NUMERIC | Price relative to 20-day SMA | `1.0250` |
-| **Metadata** | | | |
-| `explanation` | JSONB | AI-generated explanation | `{"summary": "...", "factors": [...]}` |
-| `data_sources_used` | TEXT[] | Data sources used | `{polygon, newsapi, finnhub}` |
-| `generated_at` | TIMESTAMP | When recommendation was generated | `2026-01-21 00:02:33` |
-| `created_at` | TIMESTAMP | Database insert time | `2026-01-20 06:52:03` |
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    RECOMMENDATION SERVICE                           │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  INPUT: Stock Symbol (e.g., "AAPL")                                 │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+          ┌───────────────────────┴───────────────────────┐
+          ▼                                               ▼
+┌─────────────────────┐                     ┌─────────────────────┐
+│   NEWS FEATURES     │                     │ TECHNICAL FEATURES  │
+│                     │                     │                     │
+│ Source: ClickHouse  │                     │ Source: Polygon API │
+│                     │                     │                     │
+│ • Sentiment (LLM)   │                     │ • RSI               │
+│ • Momentum          │                     │ • MACD              │
+│ • Article Count     │                     │ • SMA20             │
+│ • 14-day history    │                     │ • Volatility        │
+└─────────────────────┘                     └─────────────────────┘
+          │                                               │
+          └───────────────────────┬───────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SCORE COMBINATION                                │
+│                                                                     │
+│   combined = 0.5 * news_signals + 0.5 * technical_signals          │
+│   normalized = (combined + 1) / 2                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    ACTION DETERMINATION                             │
+│                                                                     │
+│   > 80%  →  BUY    │   50-80%  →  HOLD    │   < 50%  →  SELL       │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    OUTPUT: Recommendation                           │
+│                                                                     │
+│  {                                                                  │
+│    symbol: "AAPL",                                                  │
+│    action: "HOLD",                                                  │
+│    score: 0.053,                                                    │
+│    normalized_score: 0.527,                                         │
+│    confidence: 0.54,                                                │
+│    price: 247.65,                                                   │
+│    news_sentiment_score: 0.41,                                      │
+│    technical_trend_score: -0.45,                                    │
+│    explanation: {...}                                               │
+│  }                                                                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Running the Recommendation Engine
+## Key Files
 
-### Scheduled Mode (Default)
+| File | Purpose |
+|------|---------|
+| `ml-services/recommendation-engine/src/main.py` | Main recommendation engine & API |
+| `ml-services/recommendation-engine/src/regime_classifier.py` | **NEW** - Regime classification model |
+| `ml-services/recommendation-engine/src/news_features.py` | News feature extraction from ClickHouse |
+| `ml-services/recommendation-engine/src/technical_features.py` | Technical indicator calculations |
+| `ml-services/recommendation-engine/tests/test_regime_classifier.py` | **NEW** - Unit tests for regime classifier |
+| `ml-services/sentiment-analysis/src/analyzer.py` | LLM-based sentiment analysis |
+| `ml-services/news_ingestion_service.py` | Fetches news & runs sentiment analysis |
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check for load balancers |
+| `/recommendations` | POST | Generate recommendations for symbols |
+| `/recommendations/{symbol}` | GET | Get latest recommendation for symbol |
+| `/features/{symbol}` | GET | Get current features for symbol (debugging) |
+| `/regime/{symbol}` | GET | **NEW** - Get current regime classification |
+
+### Regime Endpoint Example
+
 ```bash
-python recommendation_flow.py
+curl http://localhost:8000/regime/AAPL
 ```
-Runs every 2 hours automatically.
 
-### On-Demand Mode
-```bash
-python recommendation_flow.py --once
+**Response:**
+```json
+{
+  "symbol": "AAPL",
+  "regime": {
+    "regime_label": "Volatile / Bearish",
+    "risk_level": "high",
+    "volatility": "high",
+    "trend": "downtrend",
+    "liquidity": "normal",
+    "information": "news_driven",
+    "risk_score": 0.65,
+    "regime_confidence": 0.72,
+    "warnings": ["High volatility - consider smaller position sizes"],
+    "explanations": [
+      "Market volatility is elevated. Signals may be less reliable.",
+      "Moderate downtrend detected.",
+      "High news activity driving price action."
+    ]
+  },
+  "signal_weights": {
+    "news_sentiment": 0.35,
+    "news_momentum": 0.22,
+    "technical_trend": 0.25,
+    "technical_momentum": 0.18,
+    "confidence_multiplier": 0.7,
+    "trade_frequency_modifier": 1.0
+  },
+  "timestamp": "2026-01-23T23:30:00Z"
+}
 ```
-Runs once and exits.
-
-### Environment Variables
-- `DATABASE_URL` - PostgreSQL connection string
-- `VAULT_ADDR` - Vault server address for API keys
-- `VAULT_TOKEN` - Vault authentication token
-- `WATCHLIST_SYMBOLS` - Fallback symbols (default reads from database)
 
 ---
 
-## Future Enhancements
+## Usage
 
-1. **ML Model Integration** - Replace rule-based scoring with trained ML models
-2. **Backtesting Framework** - Validate recommendation accuracy against historical data
-3. **Risk-Adjusted Scoring** - Factor in volatility and portfolio exposure
-4. **Real-time Updates** - Stream-based recommendations on significant events
+### Running the Recommendation Engine
+
+```bash
+# Generate recommendations via the API
+curl http://localhost:8000/recommendations?symbols=AAPL,MSFT
+
+# Or use the StartUpApplication script
+python scripts/StartUpApplication.py --symbols AAPL,MSFT,GOOGL
+
+# Check regime for a symbol
+curl http://localhost:8000/regime/AAPL
+```
+
+### Running the News Ingestion Service
+
+```bash
+# Run once to fetch and analyze news
+python ml-services/news_ingestion_service.py --once --symbols AAPL
+
+# Run continuously (every 30 minutes)
+python ml-services/news_ingestion_service.py --interval 30
+```
+
+---
+
+## Regime Classification Details
+
+### RegimeClassifier Class
+
+The `RegimeClassifier` class in `regime_classifier.py` provides:
+
+1. **`classify(symbol, technical_features, news_features)`** - Classifies current regime
+2. **`get_signal_weights(regime_state)`** - Gets optimized weights for regime
+3. **`get_regime_explanation(regime_state)`** - Gets human-readable explanation
+
+### Hysteresis
+
+The classifier includes **hysteresis** to prevent regime flip-flopping:
+- A regime change must persist for 3 consecutive classifications
+- This prevents noisy signals from causing rapid regime changes
+
+### Risk Score
+
+Each regime state includes a `risk_score` (0-1) calculated from:
+- Volatility risk (35% weight)
+- Trend risk (25% weight) - choppy = high risk
+- Liquidity risk (20% weight)
+- Information risk (20% weight)
+
+A `risk_score > 0.7` triggers `is_high_risk()` warnings.

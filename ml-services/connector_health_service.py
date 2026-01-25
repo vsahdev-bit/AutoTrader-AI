@@ -29,6 +29,7 @@ Usage:
 import asyncio
 import logging
 import os
+import signal
 import sys
 import time
 from datetime import datetime, timedelta
@@ -595,13 +596,27 @@ class ConnectorHealthService:
                     logger.info("Data connector health check is DISABLED, skipping...")
                 
                 logger.info(f"Next data connector check in {DATA_CONNECTOR_INTERVAL/3600:.1f} hours")
-                await asyncio.sleep(DATA_CONNECTOR_INTERVAL)
+                
+                # Sleep using wall-clock time to handle system sleep/suspend correctly
+                sleep_interval = 300  # 5 minutes
+                start_time = time.time()
+                target_time = start_time + DATA_CONNECTOR_INTERVAL
+                
+                while time.time() < target_time and self._running:
+                    remaining_seconds = target_time - time.time()
+                    if remaining_seconds <= 0:
+                        break
+                    sleep_time = min(sleep_interval, remaining_seconds)
+                    await asyncio.sleep(sleep_time)
+                    remaining_seconds = target_time - time.time()
+                    if remaining_seconds > 0 and self._running:
+                        logger.debug(f"Data connector health check: {remaining_seconds/3600:.1f} hours until next check")
                 
             except asyncio.CancelledError:
                 logger.info("Data connector health check loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in data connector health check: {e}")
+                logger.error(f"Error in data connector health check: {e}", exc_info=True)
                 await asyncio.sleep(60)
     
     async def run_llm_connectors_loop(self):
@@ -624,14 +639,39 @@ class ConnectorHealthService:
                     logger.info("LLM connector health check is DISABLED, skipping...")
                 
                 logger.info(f"Next LLM connector check in {LLM_CONNECTOR_INTERVAL/3600:.1f} hours")
-                await asyncio.sleep(LLM_CONNECTOR_INTERVAL)
+                
+                # Sleep using wall-clock time to handle system sleep/suspend correctly
+                sleep_interval = 300  # 5 minutes
+                start_time = time.time()
+                target_time = start_time + LLM_CONNECTOR_INTERVAL
+                
+                while time.time() < target_time and self._running:
+                    remaining_seconds = target_time - time.time()
+                    if remaining_seconds <= 0:
+                        break
+                    sleep_time = min(sleep_interval, remaining_seconds)
+                    await asyncio.sleep(sleep_time)
+                    remaining_seconds = target_time - time.time()
+                    if remaining_seconds > 0 and self._running:
+                        logger.debug(f"LLM connector health check: {remaining_seconds/3600:.1f} hours until next check")
                 
             except asyncio.CancelledError:
                 logger.info("LLM connector health check loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in LLM connector health check: {e}")
+                logger.error(f"Error in LLM connector health check: {e}", exc_info=True)
                 await asyncio.sleep(60)
+    
+    async def _heartbeat_loop(self):
+        """Log periodic heartbeat to show the service is alive."""
+        heartbeat_interval = 3600  # Log every hour
+        while self._running:
+            try:
+                await asyncio.sleep(heartbeat_interval)
+                if self._running:
+                    logger.info("💓 Health check service heartbeat - service is running")
+            except asyncio.CancelledError:
+                break
     
     async def start_scheduled(self):
         """Start the scheduled health check loops with separate intervals."""
@@ -639,11 +679,14 @@ class ConnectorHealthService:
         logger.info(f"Starting scheduled health checks:")
         logger.info(f"  - Data connectors: every {DATA_CONNECTOR_INTERVAL/3600:.1f} hours")
         logger.info(f"  - LLM connectors: every {LLM_CONNECTOR_INTERVAL/3600:.1f} hours")
+        logger.info(f"  - Heartbeat: every 1 hour")
         
-        # Run both loops concurrently
+        # Run all loops concurrently
         await asyncio.gather(
             self.run_data_connectors_loop(),
             self.run_llm_connectors_loop(),
+            self._heartbeat_loop(),
+            return_exceptions=True,  # Don't let one failing loop crash others
         )
     
     def stop(self):
@@ -656,6 +699,16 @@ async def main(run_once: bool = False):
     """Main entry point."""
     service = ConnectorHealthService()
     
+    # Set up signal handlers for graceful shutdown
+    def handle_signal(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name} signal, initiating graceful shutdown...")
+        service.stop()
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    
     try:
         await service.initialize()
         
@@ -667,13 +720,17 @@ async def main(run_once: bool = False):
             print(f"   Data Connectors: {data_conn.get('connected', 0)}/{data_conn.get('total', 0)} connected")
             print(f"   LLM Providers: {llm_conn.get('connected', 0)}/{llm_conn.get('total', 0)} connected")
         else:
+            logger.info("Health check service starting in scheduled mode...")
             await service.start_scheduled()
             
     except KeyboardInterrupt:
-        logger.info("Received interrupt signal")
+        logger.info("Received keyboard interrupt")
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}", exc_info=True)
     finally:
         service.stop()
         await service.close()
+        logger.info("Health check service shutdown complete")
 
 
 if __name__ == "__main__":
