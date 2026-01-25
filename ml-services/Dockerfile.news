@@ -1,0 +1,39 @@
+# News Ingestion Service Dockerfile
+# Fetches news from multiple sources and stores in ClickHouse
+# Build context: project root (../../ from infrastructure/docker)
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY ml-services/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the news ingestion service
+COPY ml-services/news_ingestion_service.py /app/
+
+# Copy vault client
+COPY ml-services/vault_client.py /app/
+
+# Copy streaming module (for connectors)
+COPY streaming/ /app/streaming/
+
+# Copy sentiment analysis module with proper structure for imports
+COPY ml-services/sentiment-analysis/ /app/sentiment_analysis/
+
+# Create symlinks for import compatibility
+RUN ln -s /app/streaming/connectors /app/connectors
+
+# Set Python path and disable output buffering for real-time logs
+ENV PYTHONPATH="/app:/app/streaming:/app/sentiment_analysis/src"
+ENV PYTHONUNBUFFERED=1
+
+# Run the news ingestion service (default: every 30 minutes)
+CMD ["python", "-u", "news_ingestion_service.py"]

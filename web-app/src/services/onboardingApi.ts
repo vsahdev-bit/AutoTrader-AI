@@ -1,4 +1,13 @@
-const API_BASE = 'http://localhost:3001/api';
+/**
+ * API Base URL Configuration
+ * 
+ * Uses relative URL '/api' which is proxied by Vite to the API gateway.
+ * This works in both development (Vite dev server proxy) and Docker
+ * (where the web-app container proxies to api-gateway container).
+ * 
+ * @see vite.config.ts for proxy configuration
+ */
+const API_BASE = '/api';
 
 export interface User {
   id: string;
@@ -70,13 +79,23 @@ export async function authenticateUser(userData: {
 
 // Get onboarding data
 export async function getOnboardingData(userId: string): Promise<{
-  onboarding: OnboardingStatus;
-  profile: UserProfile;
-  preferences: TradingPreferences;
+  onboarding: OnboardingStatus | null;
+  profile: UserProfile | null;
+  preferences: TradingPreferences | null;
   watchlist: WatchlistStock[];
   brokerageConnections: BrokerageConnection[];
 }> {
   const response = await fetch(`${API_BASE}/onboarding/${userId}`);
+  if (!response.ok) {
+    console.error('Failed to fetch onboarding data:', response.status, response.statusText);
+    return {
+      onboarding: null,
+      profile: null,
+      preferences: null,
+      watchlist: [],
+      brokerageConnections: [],
+    };
+  }
   return response.json();
 }
 

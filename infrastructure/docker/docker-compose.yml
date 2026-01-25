@@ -66,15 +66,18 @@ services:
       - "5173:5173"
     environment:
       - VITE_API_URL=http://api-gateway:3001
+      - VITE_RECOMMENDATION_ENGINE_URL=http://recommendation-engine:8000
     depends_on:
       - api-gateway
+      - recommendation-engine
     networks:
       - autotrader-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5173"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5173"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
   # ===========================================================================
   # Recommendation Engine - ML Service for Stock Recommendations
@@ -99,12 +102,42 @@ services:
       - CLICKHOUSE_PASSWORD=clickhouse_dev_pass
       - REDIS_URL=redis://redis:6379
       - SCHEDULE_INTERVAL_SECONDS=7200
+      - ENABLE_TRADING_HOURS_CHECK=false
     depends_on:
       postgres:
         condition: service_healthy
       vault:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    networks:
+      - autotrader-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # News Ingestion Service - Fetches news and analyzes sentiment
+  # ===========================================================================
+  # Fetches news from multiple sources (Polygon, Finnhub, NewsAPI, etc.)
+  # Analyzes sentiment using LLM and stores in ClickHouse
+  # Runs every 30 minutes by default
+  # ===========================================================================
+  news-ingestion:
+    build:
+      context: ../..
+      dockerfile: ml-services/Dockerfile.news
+    container_name: autotrader-news-ingestion
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-root-token
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=clickhouse_dev_pass
+      - NEWS_INTERVAL_MINUTES=30
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      vault:
         condition: service_healthy
     networks:
       - autotrader-network
@@ -195,10 +228,11 @@ services:
     ports:
       - "9092:9092"
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      test: ["CMD-SHELL", "/bin/kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
     networks:
       - autotrader-network
 
@@ -234,10 +268,11 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8123/ping"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8123/ping || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     networks:
       - autotrader-network
 

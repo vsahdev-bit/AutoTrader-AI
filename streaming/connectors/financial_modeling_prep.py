@@ -2,28 +2,29 @@
 Financial Modeling Prep (FMP) Connector
 =======================================
 
-Fetches news and financial data from Financial Modeling Prep API.
-FMP provides comprehensive financial data including news, fundamentals,
-price data, and SEC filings.
+Fetches company profile, quote, and news data from Financial Modeling Prep API.
+FMP provides comprehensive financial data including real-time quotes,
+company profiles, price changes, and market articles.
 
 API Documentation: https://site.financialmodelingprep.com/developer/docs
 
 Features:
-- Stock news with sentiment
-- Press releases
-- SEC filings (8-K, 10-K, 10-Q)
-- Earnings transcripts
-- Real-time and historical prices
-- Company fundamentals
+- Company profiles with detailed information
+- Real-time stock quotes (full and short)
+- Stock price changes (1D, 5D, 1M, 3M, 6M, 1Y, etc.)
+- FMP market articles and news
 
 Rate Limits:
 - Free tier: 250 requests/day
 - Paid plans: Higher limits
 
+Note: As of August 2025, FMP deprecated legacy v3/v4 endpoints.
+New accounts must use the /stable/ API endpoints.
+
 Required API Key: https://financialmodelingprep.com/developer
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 import logging
 
@@ -36,24 +37,24 @@ class FinancialModelingPrepConnector(BaseNewsConnector):
     """
     Connector for Financial Modeling Prep API.
     
-    FMP is excellent for combining news with fundamental data
-    and SEC filings for comprehensive analysis.
+    FMP provides company profiles and real-time quote data
+    for comprehensive stock analysis.
     
     Example Usage:
         connector = FinancialModelingPrepConnector(api_key="your_key")
         
-        # Fetch stock news
-        articles = await connector.fetch_news(symbols=["AAPL"])
+        # Fetch company profile
+        profile = await connector.fetch_profile(symbol="AAPL")
         
-        # Fetch SEC filings
-        filings = await connector.fetch_sec_filings(symbol="AAPL")
+        # Fetch stock quote
+        quote = await connector.fetch_quote(symbol="AAPL")
         
-        # Fetch press releases
-        releases = await connector.fetch_press_releases(symbol="AAPL")
+        # Fetch multiple profiles
+        profiles = await connector.fetch_profiles(symbols=["AAPL", "GOOGL", "MSFT"])
     """
     
     source = NewsSource.UNKNOWN
-    base_url = "https://financialmodelingprep.com/api"
+    base_url = "https://financialmodelingprep.com/stable"
     rate_limit_per_minute = 10  # Conservative for free tier
     
     def __init__(self, api_key: Optional[str] = None, **kwargs):
@@ -72,6 +73,240 @@ class FinancialModelingPrepConnector(BaseNewsConnector):
             if not self.api_key:
                 logger.warning("No FMP API key found in Vault or environment")
     
+    async def fetch_profile(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch company profile for a symbol.
+        
+        Args:
+            symbol: Stock symbol (e.g., "AAPL")
+            
+        Returns:
+            Dictionary containing company profile data including:
+            - symbol, companyName, price, marketCap
+            - sector, industry, description
+            - ceo, website, exchange
+            - beta, volume, averageVolume
+            - range, change, changePercentage
+        """
+        await self._ensure_api_key()
+        
+        if not self.api_key:
+            raise ValueError("FMP API key is required")
+        
+        url = f"{self.base_url}/profile"
+        params = {
+            "symbol": symbol,
+            "apikey": self.api_key,
+        }
+        
+        try:
+            data = await self._make_request(url, params=params)
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch FMP profile for {symbol}: {e}")
+            return None
+    
+    async def fetch_profiles(self, symbols: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch company profiles for multiple symbols.
+        
+        Args:
+            symbols: List of stock symbols (e.g., ["AAPL", "GOOGL", "MSFT"])
+            
+        Returns:
+            List of dictionaries containing company profile data
+        """
+        profiles = []
+        for symbol in symbols:
+            profile = await self.fetch_profile(symbol)
+            if profile:
+                profiles.append(profile)
+        return profiles
+    
+    async def fetch_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch real-time quote for a symbol.
+        
+        Args:
+            symbol: Stock symbol (e.g., "AAPL")
+            
+        Returns:
+            Dictionary containing quote data including:
+            - symbol, name, price
+            - change, changePercentage
+            - volume, dayLow, dayHigh
+            - yearLow, yearHigh, marketCap
+            - priceAvg50, priceAvg200
+            - open, previousClose, timestamp
+        """
+        await self._ensure_api_key()
+        
+        if not self.api_key:
+            raise ValueError("FMP API key is required")
+        
+        url = f"{self.base_url}/quote"
+        params = {
+            "symbol": symbol,
+            "apikey": self.api_key,
+        }
+        
+        try:
+            data = await self._make_request(url, params=params)
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch FMP quote for {symbol}: {e}")
+            return None
+    
+    async def fetch_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch real-time quotes for multiple symbols.
+        
+        Args:
+            symbols: List of stock symbols (e.g., ["AAPL", "GOOGL", "MSFT"])
+            
+        Returns:
+            List of dictionaries containing quote data
+        """
+        quotes = []
+        for symbol in symbols:
+            quote = await self.fetch_quote(symbol)
+            if quote:
+                quotes.append(quote)
+        return quotes
+    
+    async def fetch_quote_short(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch a short/condensed quote for a symbol.
+        
+        Args:
+            symbol: Stock symbol (e.g., "AAPL")
+            
+        Returns:
+            Dictionary containing condensed quote data:
+            - symbol, price, change, volume
+        """
+        await self._ensure_api_key()
+        
+        if not self.api_key:
+            raise ValueError("FMP API key is required")
+        
+        url = f"{self.base_url}/quote-short"
+        params = {
+            "symbol": symbol,
+            "apikey": self.api_key,
+        }
+        
+        try:
+            data = await self._make_request(url, params=params)
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch FMP quote-short for {symbol}: {e}")
+            return None
+    
+    async def fetch_quotes_short(self, symbols: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch short/condensed quotes for multiple symbols.
+        
+        Args:
+            symbols: List of stock symbols (e.g., ["AAPL", "GOOGL", "MSFT"])
+            
+        Returns:
+            List of dictionaries containing condensed quote data
+        """
+        quotes = []
+        for symbol in symbols:
+            quote = await self.fetch_quote_short(symbol)
+            if quote:
+                quotes.append(quote)
+        return quotes
+    
+    async def fetch_stock_price_change(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch stock price change data for various time periods.
+        
+        Args:
+            symbol: Stock symbol (e.g., "AAPL")
+            
+        Returns:
+            Dictionary containing price change percentages:
+            - symbol, 1D, 5D, 1M, 3M, 6M, ytd, 1Y, 3Y, 5Y, 10Y, max
+        """
+        await self._ensure_api_key()
+        
+        if not self.api_key:
+            raise ValueError("FMP API key is required")
+        
+        url = f"{self.base_url}/stock-price-change"
+        params = {
+            "symbol": symbol,
+            "apikey": self.api_key,
+        }
+        
+        try:
+            data = await self._make_request(url, params=params)
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch FMP stock-price-change for {symbol}: {e}")
+            return None
+    
+    async def fetch_stock_price_changes(self, symbols: List[str]) -> List[Dict[str, Any]]:
+        """
+        Fetch stock price change data for multiple symbols.
+        
+        Args:
+            symbols: List of stock symbols (e.g., ["AAPL", "GOOGL", "MSFT"])
+            
+        Returns:
+            List of dictionaries containing price change data
+        """
+        changes = []
+        for symbol in symbols:
+            change = await self.fetch_stock_price_change(symbol)
+            if change:
+                changes.append(change)
+        return changes
+    
+    async def fetch_fmp_articles(self, page: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Fetch FMP market articles and news.
+        
+        Args:
+            page: Page number (0-indexed)
+            limit: Number of articles to fetch (max 50)
+            
+        Returns:
+            List of dictionaries containing article data:
+            - title, date, content, tickers, image, link, author, site
+        """
+        await self._ensure_api_key()
+        
+        if not self.api_key:
+            raise ValueError("FMP API key is required")
+        
+        url = f"{self.base_url}/fmp-articles"
+        params = {
+            "page": page,
+            "limit": min(limit, 50),
+            "apikey": self.api_key,
+        }
+        
+        try:
+            data = await self._make_request(url, params=params)
+            if data and isinstance(data, list):
+                return data
+            return []
+        except Exception as e:
+            logger.error(f"Failed to fetch FMP articles: {e}")
+            return []
+    
     async def fetch_news(
         self,
         symbols: Optional[List[str]] = None,
@@ -79,258 +314,63 @@ class FinancialModelingPrepConnector(BaseNewsConnector):
         limit: int = 50,
     ) -> List[NewsArticle]:
         """
-        Fetch stock news from FMP.
+        Fetch news articles from FMP.
+        
+        This method uses the fmp-articles endpoint which is available
+        on the current subscription. For stock-specific news filtering,
+        articles are filtered by the provided symbols.
         
         Args:
-            symbols: Stock symbols to fetch news for
-            since: Only return articles after this time
-            limit: Maximum articles to return
+            symbols: Optional list of stock symbols to filter articles
+            since: Optional datetime to filter articles after this time
+            limit: Maximum number of articles to return
             
         Returns:
             List of NewsArticle objects
         """
-        # Load API key from Vault if not already loaded
-        await self._ensure_api_key()
+        articles_data = await self.fetch_fmp_articles(page=0, limit=limit)
         
-        if not self.api_key:
-            raise ValueError("FMP API key is required")
-        
-        all_articles = []
-        
-        if symbols:
-            # Fetch news for specific symbols
-            for symbol in symbols:
+        articles = []
+        for article in articles_data:
+            # Filter by symbols if provided
+            if symbols:
+                article_tickers = article.get("tickers", "")
+                if not any(symbol in article_tickers for symbol in symbols):
+                    continue
+            
+            # Filter by date if provided
+            article_date = None
+            if article.get("date"):
                 try:
-                    articles = await self._fetch_stock_news(symbol, limit)
-                    all_articles.extend(articles)
-                except Exception as e:
-                    logger.error(f"Failed to fetch FMP news for {symbol}: {e}")
-        else:
-            # Fetch general market news
-            all_articles = await self._fetch_general_news(limit)
-        
-        # Filter by time
-        if since:
-            all_articles = [a for a in all_articles if a.published_at >= since]
-        
-        # Deduplicate
-        seen = set()
-        unique = []
-        for a in all_articles:
-            if a.article_id not in seen:
-                seen.add(a.article_id)
-                unique.append(a)
-        
-        self.articles_fetched += len(unique[:limit])
-        return unique[:limit]
-    
-    async def _fetch_stock_news(self, symbol: str, limit: int) -> List[NewsArticle]:
-        """Fetch news for a specific stock."""
-        url = f"{self.base_url}/v3/stock_news"
-        params = {
-            "tickers": symbol,
-            "limit": min(limit, 100),
-            "apikey": self.api_key,
-        }
-        
-        data = await self._make_request(url, params=params)
-        
-        articles = []
-        for item in data:
-            article = self._parse_article(item)
-            if article:
-                articles.append(article)
-        
-        return articles
-    
-    async def _fetch_general_news(self, limit: int) -> List[NewsArticle]:
-        """Fetch general market news."""
-        url = f"{self.base_url}/v3/fmp/articles"
-        params = {
-            "page": 0,
-            "size": min(limit, 100),
-            "apikey": self.api_key,
-        }
-        
-        data = await self._make_request(url, params=params)
-        content = data.get("content", [])
-        
-        articles = []
-        for item in content:
-            article = self._parse_fmp_article(item)
-            if article:
-                articles.append(article)
-        
-        return articles
-    
-    def _parse_article(self, item: Dict[str, Any]) -> Optional[NewsArticle]:
-        """Parse FMP stock news item."""
-        try:
-            # Parse timestamp
-            pub_date = item.get("publishedDate", "")
-            if pub_date:
-                published_at = datetime.fromisoformat(
-                    pub_date.replace("Z", "+00:00").replace("+00:00", "")
-                )
-            else:
-                published_at = datetime.utcnow()
+                    article_date = datetime.strptime(article["date"], "%Y-%m-%d %H:%M:%S")
+                    if since and article_date < since:
+                        continue
+                except ValueError:
+                    pass
             
-            symbol = item.get("symbol", "")
-            symbols = [symbol] if symbol else []
+            # Extract symbol from tickers (format: "NASDAQ:MSFT" -> "MSFT")
+            tickers_raw = article.get("tickers", "")
+            symbols_list = []
+            for ticker in tickers_raw.split(","):
+                ticker = ticker.strip()
+                if ":" in ticker:
+                    ticker = ticker.split(":")[1]
+                if ticker:
+                    symbols_list.append(ticker)
             
-            title = item.get("title", "")
-            text = item.get("text", "")
-            
-            return NewsArticle(
-                title=title,
-                summary=text[:500] if text else "",
-                content=text,
-                url=item.get("url", ""),
+            news_article = NewsArticle(
+                title=article.get("title", ""),
+                summary=article.get("content", "")[:500] if article.get("content") else "",
+                url=article.get("link", ""),
                 source=self.source,
-                source_name=item.get("site", "FMP"),
-                published_at=published_at,
-                symbols=symbols,
-                categories=self._categorize_article(title, text),
-                image_url=item.get("image"),
-                metadata={
-                    "fmp_symbol": symbol,
-                },
+                source_name=self.source_name,
+                published_at=article_date or datetime.now(),
+                content=article.get("content", ""),
+                symbols=symbols_list,
+                categories=[NewsCategory.MARKET],
+                author=article.get("author"),
+                image_url=article.get("image"),
             )
-        except Exception as e:
-            logger.warning(f"Failed to parse FMP article: {e}")
-            return None
-    
-    def _parse_fmp_article(self, item: Dict[str, Any]) -> Optional[NewsArticle]:
-        """Parse FMP own articles."""
-        try:
-            pub_date = item.get("date", "")
-            if pub_date:
-                published_at = datetime.fromisoformat(pub_date.replace("Z", ""))
-            else:
-                published_at = datetime.utcnow()
-            
-            title = item.get("title", "")
-            content = item.get("content", "")
-            
-            # Extract tickers from content
-            tickers = item.get("tickers", "")
-            symbols = [t.strip() for t in tickers.split(",") if t.strip()]
-            
-            return NewsArticle(
-                title=title,
-                summary=content[:500] if content else "",
-                content=content,
-                url=item.get("link", ""),
-                source=self.source,
-                source_name="Financial Modeling Prep",
-                published_at=published_at,
-                symbols=symbols,
-                categories=self._categorize_article(title, content),
-                author=item.get("author"),
-                image_url=item.get("image"),
-                metadata={},
-            )
-        except Exception as e:
-            logger.warning(f"Failed to parse FMP article: {e}")
-            return None
-    
-    async def fetch_press_releases(
-        self,
-        symbol: str,
-        limit: int = 50,
-    ) -> List[NewsArticle]:
-        """Fetch press releases for a symbol."""
-        if not self.api_key:
-            raise ValueError("FMP API key is required")
+            articles.append(news_article)
         
-        url = f"{self.base_url}/v3/press-releases/{symbol}"
-        params = {
-            "limit": min(limit, 100),
-            "apikey": self.api_key,
-        }
-        
-        try:
-            data = await self._make_request(url, params=params)
-            
-            articles = []
-            for item in data:
-                pub_date = item.get("date", "")
-                if pub_date:
-                    published_at = datetime.fromisoformat(pub_date)
-                else:
-                    published_at = datetime.utcnow()
-                
-                title = item.get("title", "")
-                text = item.get("text", "")
-                
-                article = NewsArticle(
-                    title=title,
-                    summary=text[:500] if text else "",
-                    content=text,
-                    url="",
-                    source=self.source,
-                    source_name="Press Release",
-                    published_at=published_at,
-                    symbols=[symbol],
-                    categories=[NewsCategory.GENERAL],
-                    metadata={"type": "press_release"},
-                )
-                articles.append(article)
-            
-            return articles
-        except Exception as e:
-            logger.error(f"Failed to fetch FMP press releases: {e}")
-            return []
-    
-    async def fetch_sec_filings(
-        self,
-        symbol: str,
-        filing_type: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch SEC filings for a symbol.
-        
-        Args:
-            symbol: Stock symbol
-            filing_type: Filter by type (10-K, 10-Q, 8-K, etc.)
-            limit: Maximum filings to return
-            
-        Returns:
-            List of filing objects
-        """
-        if not self.api_key:
-            raise ValueError("FMP API key is required")
-        
-        url = f"{self.base_url}/v3/sec_filings/{symbol}"
-        params = {
-            "limit": min(limit, 100),
-            "apikey": self.api_key,
-        }
-        
-        if filing_type:
-            params["type"] = filing_type
-        
-        try:
-            data = await self._make_request(url, params=params)
-            return data
-        except Exception as e:
-            logger.error(f"Failed to fetch FMP SEC filings: {e}")
-            return []
-    
-    async def fetch_earnings_surprises(
-        self,
-        symbol: str,
-    ) -> List[Dict[str, Any]]:
-        """Fetch earnings surprises for a symbol."""
-        if not self.api_key:
-            raise ValueError("FMP API key is required")
-        
-        url = f"{self.base_url}/v3/earnings-surprises/{symbol}"
-        params = {"apikey": self.api_key}
-        
-        try:
-            return await self._make_request(url, params=params)
-        except Exception as e:
-            logger.error(f"Failed to fetch FMP earnings: {e}")
-            return []
+        return articles[:limit]

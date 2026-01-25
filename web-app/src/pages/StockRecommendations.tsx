@@ -21,33 +21,37 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
-import { recommendationApi } from '../services/api'
+import { recommendationApi, regimeApi } from '../services/api'
 import { getOnboardingData } from '../services/onboardingApi'
-import { StockRecommendationHistory } from '../types'
+import { StockRecommendationHistory, RegimeResponse } from '../types'
 import { useAuth } from '../context/AuthContext'
 import Header from '../components/Header'
 import api from '../services/api'
+import RegimeDisplay from '../components/RegimeDisplay'
 
 /**
  * Tooltip Component for column headers
+ * Shows tooltip below the trigger to avoid being hidden under table rows
  */
 function Tooltip({ children, text }: { children: React.ReactNode; text: string }) {
   return (
     <div className="group relative inline-flex items-center gap-1 cursor-help">
       {children}
-      <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg className="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-normal w-64 z-50 shadow-lg">
+      {/* Tooltip appears below to avoid z-index issues with table rows */}
+      <div className="absolute top-full left-0 mt-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 whitespace-normal w-64 z-[100] shadow-xl pointer-events-none">
         {text}
-        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+        {/* Arrow pointing up */}
+        <div className="absolute bottom-full left-4 border-4 border-transparent border-b-gray-900" />
       </div>
     </div>
   )
 }
 
 /**
- * Explanation Modal Component
+ * Explanation Modal Component - Enhanced to show all recommendation details
  */
 function ExplanationModal({ 
   isOpen, 
@@ -71,12 +75,23 @@ function ExplanationModal({
           onClick={onClose}
         />
         
-        {/* Modal */}
-        <div className="relative inline-block w-full max-w-lg p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">
-              AI Explanation - {symbol}
-            </h3>
+        {/* Modal - Made wider for more content */}
+        <div className="relative inline-block w-full max-w-2xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-4 sticky top-0 bg-white pb-2 border-b border-gray-100">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                AI Explanation - {symbol}
+              </h3>
+              {explanation?.action && (
+                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 ${
+                  explanation.action === 'BUY' ? 'bg-green-100 text-green-800' :
+                  explanation.action === 'SELL' ? 'bg-red-100 text-red-800' :
+                  'bg-yellow-100 text-yellow-800'
+                }`}>
+                  {explanation.action}
+                </span>
+              )}
+            </div>
             <button
               onClick={onClose}
               className="text-gray-400 hover:text-gray-600 transition-colors"
@@ -88,13 +103,49 @@ function ExplanationModal({
           </div>
           
           {explanation ? (
-            <div className="space-y-4">
+            <div className="space-y-5">
+              {/* Score Summary */}
+              {explanation.score !== undefined && (
+                <div className="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-gray-900">
+                      {((explanation.score + 1) / 2 * 100).toFixed(0)}%
+                    </div>
+                    <div className="text-xs text-gray-500">Score</div>
+                  </div>
+                  <div className="flex-1 h-3 bg-gray-200 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full ${
+                        explanation.score > 0.2 ? 'bg-green-500' :
+                        explanation.score < -0.2 ? 'bg-red-500' : 'bg-yellow-500'
+                      }`}
+                      style={{ width: `${((explanation.score + 1) / 2) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              
               {/* LLM-Powered Summary */}
               {explanation.summary && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-1">AI Analysis</h4>
-                  <p className="text-gray-600 bg-blue-50 p-3 rounded-lg border border-blue-100">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                    AI Analysis
+                  </h4>
+                  <p className="text-gray-600 bg-blue-50 p-4 rounded-lg border border-blue-100 leading-relaxed">
                     {explanation.summary}
+                  </p>
+                </div>
+              )}
+              
+              {/* LLM Analysis (if different from summary) */}
+              {explanation.llm_analysis && explanation.llm_analysis !== explanation.summary && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">Detailed LLM Analysis</h4>
+                  <p className="text-gray-600 bg-purple-50 p-4 rounded-lg border border-purple-100 leading-relaxed text-sm">
+                    {explanation.llm_analysis}
                   </p>
                 </div>
               )}
@@ -102,11 +153,16 @@ function ExplanationModal({
               {/* Key Factors */}
               {explanation.factors && explanation.factors.length > 0 && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Key Factors</h4>
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Key Factors
+                  </h4>
                   <ul className="bg-green-50 p-3 rounded-lg border border-green-100 space-y-2">
                     {explanation.factors.map((factor: string, idx: number) => (
                       <li key={idx} className="flex items-start gap-2 text-sm text-gray-600">
-                        <span className="text-green-500 mt-0.5">✓</span>
+                        <span className="text-green-500 mt-0.5 flex-shrink-0">✓</span>
                         <span>{factor}</span>
                       </li>
                     ))}
@@ -114,20 +170,39 @@ function ExplanationModal({
                 </div>
               )}
               
-              {/* Recent News Articles */}
-              {(explanation as any).recent_articles && (explanation as any).recent_articles.length > 0 && (
+              {/* Recent News Articles with Links */}
+              {explanation.recent_articles && explanation.recent_articles.length > 0 && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Recent News</h4>
-                  <div className="bg-gray-50 p-3 rounded-lg space-y-2 max-h-48 overflow-y-auto">
-                    {(explanation as any).recent_articles.map((article: { title: string; source: string; sentiment: string }, idx: number) => (
-                      <div key={idx} className="text-sm border-b border-gray-200 pb-2 last:border-0 last:pb-0">
-                        <p className="text-gray-700 font-medium line-clamp-2">{article.title}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="text-gray-500 text-xs">{article.source}</span>
-                          <span className={`text-xs px-2 py-0.5 rounded ${
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+                    </svg>
+                    Recent News ({explanation.recent_articles.length} articles)
+                  </h4>
+                  <div className="bg-gray-50 p-3 rounded-lg space-y-3 max-h-64 overflow-y-auto border border-gray-200">
+                    {explanation.recent_articles.map((article, idx) => (
+                      <div key={idx} className="text-sm border-b border-gray-200 pb-3 last:border-0 last:pb-0">
+                        {article.url ? (
+                          <a 
+                            href={article.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 hover:underline font-medium line-clamp-2 flex items-start gap-1"
+                          >
+                            {article.title}
+                            <svg className="w-3 h-3 flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                          </a>
+                        ) : (
+                          <p className="text-gray-700 font-medium line-clamp-2">{article.title}</p>
+                        )}
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="text-gray-500 text-xs bg-gray-100 px-2 py-0.5 rounded">{article.source}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${
                             article.sentiment === 'positive' ? 'bg-green-100 text-green-700' :
                             article.sentiment === 'negative' ? 'bg-red-100 text-red-700' :
-                            'bg-gray-100 text-gray-600'
+                            'bg-gray-200 text-gray-600'
                           }`}>
                             {article.sentiment}
                           </span>
@@ -141,38 +216,45 @@ function ExplanationModal({
               {/* News Analytics */}
               {explanation.news && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">News Analytics</h4>
-                  <div className="bg-gray-50 p-3 rounded-lg text-sm text-gray-600 grid grid-cols-2 gap-2">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                    News Analytics
+                  </h4>
+                  <div className="bg-orange-50 p-3 rounded-lg text-sm text-gray-600 grid grid-cols-2 gap-3 border border-orange-100">
                     {explanation.news.articles_24h !== undefined && (
-                      <div>
+                      <div className="flex justify-between">
                         <span className="text-gray-500">Articles (24h):</span>
-                        <span className="ml-1 font-medium">{explanation.news.articles_24h}</span>
+                        <span className="font-semibold text-gray-900">{explanation.news.articles_24h}</span>
                       </div>
                     )}
                     {explanation.news.articles_7d !== undefined && (
-                      <div>
+                      <div className="flex justify-between">
                         <span className="text-gray-500">Articles (7d):</span>
-                        <span className="ml-1 font-medium">{explanation.news.articles_7d}</span>
+                        <span className="font-semibold text-gray-900">{explanation.news.articles_7d}</span>
                       </div>
                     )}
                     {explanation.news.sentiment_1d !== undefined && (
-                      <div>
-                        <span className="text-gray-500">Sentiment:</span>
-                        <span className={`ml-1 font-medium ${
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Sentiment (1d):</span>
+                        <span className={`font-semibold ${
                           explanation.news.sentiment_1d > 0.1 ? 'text-green-600' :
                           explanation.news.sentiment_1d < -0.1 ? 'text-red-600' : 'text-gray-600'
                         }`}>
-                          {(explanation.news.sentiment_1d * 100).toFixed(0)}%
+                          {explanation.news.sentiment_1d > 0 ? '+' : ''}{(explanation.news.sentiment_1d * 100).toFixed(0)}%
                         </span>
                       </div>
                     )}
                     {explanation.news.sentiment_trend && (
-                      <div>
+                      <div className="flex justify-between">
                         <span className="text-gray-500">Trend:</span>
-                        <span className={`ml-1 font-medium ${
+                        <span className={`font-semibold capitalize ${
                           explanation.news.sentiment_trend === 'improving' ? 'text-green-600' :
                           explanation.news.sentiment_trend === 'declining' ? 'text-red-600' : 'text-gray-600'
                         }`}>
+                          {explanation.news.sentiment_trend === 'improving' ? '📈 ' : 
+                           explanation.news.sentiment_trend === 'declining' ? '📉 ' : '➡️ '}
                           {explanation.news.sentiment_trend}
                         </span>
                       </div>
@@ -184,64 +266,90 @@ function ExplanationModal({
               {/* Technical Analysis */}
               {explanation.technical && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-2">Technical Analysis</h4>
-                  <div className="bg-gray-50 p-3 rounded-lg text-sm text-gray-600 grid grid-cols-2 gap-2">
-                    {explanation.technical.price !== undefined && (
-                      <div>
-                        <span className="text-gray-500">Price:</span>
-                        <span className="ml-1 font-medium">${explanation.technical.price}</span>
-                      </div>
-                    )}
-                    {explanation.technical.change_1d && (
-                      <div>
-                        <span className="text-gray-500">1d Change:</span>
-                        <span className={`ml-1 font-medium ${
-                          explanation.technical.change_1d.startsWith('-') ? 'text-red-600' : 'text-green-600'
-                        }`}>
-                          {explanation.technical.change_1d}
-                        </span>
-                      </div>
-                    )}
-                    {explanation.technical.rsi !== undefined && (
-                      <div>
-                        <span className="text-gray-500">RSI:</span>
-                        <span className={`ml-1 font-medium ${
-                          explanation.technical.rsi < 30 ? 'text-green-600' :
-                          explanation.technical.rsi > 70 ? 'text-red-600' : 'text-gray-600'
-                        }`}>
-                          {typeof explanation.technical.rsi === 'number' ? explanation.technical.rsi.toFixed(0) : explanation.technical.rsi}
-                        </span>
-                      </div>
-                    )}
-                    {explanation.technical.trend && (
-                      <div>
-                        <span className="text-gray-500">Trend:</span>
-                        <span className={`ml-1 font-medium ${
-                          explanation.technical.trend === 'bullish' ? 'text-green-600' :
-                          explanation.technical.trend === 'bearish' ? 'text-red-600' : 'text-gray-600'
-                        }`}>
-                          {explanation.technical.trend}
-                        </span>
-                      </div>
-                    )}
-                    {explanation.technical.volatility && (
-                      <div>
-                        <span className="text-gray-500">Volatility:</span>
-                        <span className="ml-1 font-medium">{explanation.technical.volatility}</span>
-                      </div>
-                    )}
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                    </svg>
+                    Technical Analysis
+                  </h4>
+                  <div className="bg-cyan-50 p-3 rounded-lg text-sm text-gray-600 border border-cyan-100">
+                    <div className="grid grid-cols-2 gap-3">
+                      {explanation.technical.price !== undefined && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Price:</span>
+                          <span className="font-semibold text-gray-900">${explanation.technical.price}</span>
+                        </div>
+                      )}
+                      {explanation.technical.change_1d && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">1d Change:</span>
+                          <span className={`font-semibold ${
+                            explanation.technical.change_1d.startsWith('-') ? 'text-red-600' : 'text-green-600'
+                          }`}>
+                            {explanation.technical.change_1d.startsWith('-') ? '' : '+'}{explanation.technical.change_1d}
+                          </span>
+                        </div>
+                      )}
+                      {explanation.technical.change_5d && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">5d Change:</span>
+                          <span className={`font-semibold ${
+                            explanation.technical.change_5d.startsWith('-') ? 'text-red-600' : 'text-green-600'
+                          }`}>
+                            {explanation.technical.change_5d.startsWith('-') ? '' : '+'}{explanation.technical.change_5d}
+                          </span>
+                        </div>
+                      )}
+                      {explanation.technical.rsi !== undefined && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">RSI:</span>
+                          <span className={`font-semibold ${
+                            explanation.technical.rsi < 30 ? 'text-green-600' :
+                            explanation.technical.rsi > 70 ? 'text-red-600' : 'text-gray-600'
+                          }`}>
+                            {typeof explanation.technical.rsi === 'number' ? explanation.technical.rsi.toFixed(1) : explanation.technical.rsi}
+                            {explanation.technical.rsi < 30 ? ' (Oversold)' : 
+                             explanation.technical.rsi > 70 ? ' (Overbought)' : ''}
+                          </span>
+                        </div>
+                      )}
+                      {explanation.technical.trend && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Trend:</span>
+                          <span className={`font-semibold capitalize ${
+                            explanation.technical.trend === 'bullish' ? 'text-green-600' :
+                            explanation.technical.trend === 'bearish' ? 'text-red-600' : 'text-gray-600'
+                          }`}>
+                            {explanation.technical.trend === 'bullish' ? '🟢 ' : 
+                             explanation.technical.trend === 'bearish' ? '🔴 ' : '🟡 '}
+                            {explanation.technical.trend}
+                          </span>
+                        </div>
+                      )}
+                      {explanation.technical.volatility && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Volatility:</span>
+                          <span className="font-semibold text-gray-900">{explanation.technical.volatility}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
             </div>
           ) : (
-            <p className="text-gray-500 italic">No explanation available for this recommendation.</p>
+            <div className="text-center py-8">
+              <svg className="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <p className="text-gray-500 italic">No explanation available for this recommendation.</p>
+            </div>
           )}
           
-          <div className="mt-6">
+          <div className="mt-6 pt-4 border-t border-gray-100">
             <button
               onClick={onClose}
-              className="w-full px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              className="w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
             >
               Close
             </button>
@@ -266,18 +374,19 @@ interface SymbolRecommendations {
 }
 
 /**
- * Format a date string to a readable format
+ * Format a date string to a readable format in PST timezone
  */
 function formatDate(dateString: string | null): string {
   if (!dateString) return '-'
   const date = new Date(dateString)
   return date.toLocaleString('en-US', {
+    timeZone: 'America/Los_Angeles',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-  })
+  }) + ' PST'
 }
 
 /**
@@ -379,6 +488,27 @@ function StockRecommendationTable({
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedExplanation, setSelectedExplanation] = useState<StockRecommendationHistory['explanation'] | null>(null)
   
+  // Regime state
+  const [regime, setRegime] = useState<RegimeResponse | null>(null)
+  const [regimeLoading, setRegimeLoading] = useState(true)
+  const [showRegime, setShowRegime] = useState(false)
+  
+  // Fetch regime data
+  useEffect(() => {
+    const fetchRegime = async () => {
+      try {
+        setRegimeLoading(true)
+        const regimeData = await regimeApi.getRegime(symbol)
+        setRegime(regimeData)
+      } catch (err) {
+        console.error(`Failed to fetch regime for ${symbol}:`, err)
+      } finally {
+        setRegimeLoading(false)
+      }
+    }
+    fetchRegime()
+  }, [symbol])
+  
   const openExplanation = (explanation: StockRecommendationHistory['explanation'] | null) => {
     setSelectedExplanation(explanation)
     setModalOpen(true)
@@ -388,55 +518,112 @@ function StockRecommendationTable({
     <div 
       ref={sectionRef}
       id={symbol}
-      className="bg-white rounded-xl shadow-sm overflow-hidden scroll-mt-24"
+      className="bg-white rounded-xl shadow-sm overflow-hidden scroll-mt-[220px]"
     >
       {/* Section Header */}
       <div className="bg-gradient-to-r from-gray-50 to-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div>
-              <h2 className="text-xl font-bold text-gray-900">{symbol}</h2>
-              <p className="text-sm text-gray-500">{companyName}</p>
-            </div>
-            {latestRec && (
-              <span className={getActionBadgeClasses(latestRec.action)}>
+        {/* Grid layout for perfect vertical alignment */}
+        <div className="grid grid-cols-5 gap-4">
+          {/* Row 1: Labels */}
+          <p className="text-sm text-gray-500">Symbol</p>
+          <p className="text-sm text-gray-500">Rating</p>
+          <p className="text-sm text-gray-500">Market Regime</p>
+          <p className="text-sm text-gray-500 text-right">Position Size</p>
+          <p className="text-sm text-gray-500 text-right">Latest Price</p>
+          
+          {/* Row 2: Values - all with consistent height */}
+          {/* Symbol Value */}
+          <div className="flex flex-col">
+            <h2 className="text-xl font-semibold text-gray-900 leading-7">{symbol}</h2>
+            <p className="text-xs text-gray-400 truncate">{companyName}</p>
+          </div>
+          
+          {/* Rating Value */}
+          <div className="flex items-start h-7">
+            {latestRec ? (
+              <span className={`inline-block ${getActionBadgeClasses(latestRec.action)}`}>
                 {latestRec.action}
               </span>
+            ) : (
+              <span className="text-xl font-semibold text-gray-400 leading-7">-</span>
             )}
           </div>
-          {latestRec?.priceAtRecommendation && (
-            <div className="text-right">
-              <p className="text-sm text-gray-500">Latest Price</p>
-              <p className="text-xl font-semibold text-gray-900">
-                {formatPrice(latestRec.priceAtRecommendation)}
+          
+          {/* Market Regime Value */}
+          <div className="flex items-start h-7 min-w-[200px]">
+            {regime ? (
+              <button
+                onClick={() => setShowRegime(!showRegime)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap ${
+                  regime.regime.risk_level === 'high'
+                    ? 'bg-red-100 text-red-800 hover:bg-red-200'
+                    : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+                }`}
+              >
+                {regime.regime.risk_level === 'high' ? '⚠️' : '📊'}
+                {regime.regime.label}
+                <svg 
+                  className={`w-3.5 h-3.5 transition-transform ${showRegime ? 'rotate-180' : ''}`} 
+                  fill="none" 
+                  viewBox="0 0 24 24" 
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            ) : regimeLoading ? (
+              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-gray-100 text-gray-500">
+                <div className="animate-spin w-3 h-3 border border-gray-400 border-t-transparent rounded-full"></div>
+                Loading...
+              </span>
+            ) : (
+              <span className="text-xl font-semibold text-gray-400 leading-7">-</span>
+            )}
+          </div>
+          
+          {/* Position Size Value */}
+          <div className="text-right">
+            {regime?.position_sizing ? (
+              <p className={`text-xl font-semibold leading-7 ${
+                regime.position_sizing.size_multiplier < 0.5 ? 'text-red-600' :
+                regime.position_sizing.size_multiplier < 0.8 ? 'text-orange-600' :
+                'text-green-600'
+              }`}>
+                {(regime.position_sizing.size_multiplier * 100).toFixed(0)}%
               </p>
-            </div>
-          )}
+            ) : (
+              <p className="text-xl font-semibold text-gray-400 leading-7">-</p>
+            )}
+          </div>
+          
+          {/* Latest Price Value */}
+          <div className="text-right">
+            <p className="text-xl font-semibold text-gray-900 leading-7">
+              {latestRec?.priceAtRecommendation 
+                ? formatPrice(latestRec.priceAtRecommendation)
+                : '-'}
+            </p>
+          </div>
         </div>
         
-        {/* Latest recommendation summary */}
-        {latestRec && (
-          <div className="mt-3 flex items-center gap-6 text-sm">
-            <div>
-              <span className="text-gray-500">Score: </span>
-              <span className="font-medium text-gray-900">
-                {latestRec.normalizedScore !== null && !isNaN(latestRec.normalizedScore)
-                  ? `${(latestRec.normalizedScore * 100).toFixed(1)}%` 
-                  : '-'}
+        {/* Regime warnings */}
+        {regime?.regime.warnings && regime.regime.warnings.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {regime.regime.warnings.map((warning, idx) => (
+              <span key={idx} className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-red-50 text-red-700 border border-red-200">
+                ⚠️ {warning}
               </span>
-            </div>
-            <div>
-              <span className="text-gray-500">Confidence: </span>
-              <span className={`font-medium ${getConfidenceIndicator(latestRec.confidence).color}`}>
-                {formatPercent(latestRec.confidence)}
-              </span>
-            </div>
-            <div className="text-gray-500 text-xs">
-              Updated: {formatDate(latestRec.generatedAt)}
-            </div>
+            ))}
           </div>
         )}
       </div>
+      
+      {/* Regime Details Panel (collapsible) */}
+      {showRegime && regime && (
+        <div className="border-b border-gray-200 p-4 bg-gray-50/50">
+          <RegimeDisplay regime={regime} isLoading={regimeLoading} />
+        </div>
+      )}
       
       {/* Loading state */}
       {loading && (
@@ -479,7 +666,7 @@ function StockRecommendationTable({
       {!loading && !error && recommendations.length > 0 && (
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+            <thead className="bg-gray-50 relative z-10">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   <Tooltip text="The exact date and time when this recommendation was generated by the AI system.">
@@ -806,8 +993,8 @@ export default function StockRecommendations() {
     <div className="min-h-screen bg-gray-50">
       <Header />
       
-      {/* Page Title and Quick Navigation */}
-      <div className="bg-white border-b border-gray-200">
+      {/* Page Title and Quick Navigation - Fixed below header */}
+      <div className="bg-white border-b border-gray-200 sticky top-[72px] z-40 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>

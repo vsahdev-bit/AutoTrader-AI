@@ -6,11 +6,12 @@ interface OnboardingStatusCardProps {
   userId: string
 }
 
-// Progress breakdown (4 sections):
-// Profile complete (all required fields): 25%
-// Trading Preferences complete: 25% (cumulative 50%)
-// Brokerage connected: 25% (cumulative 75%)
-// Watchlist has at least 1 stock: 25% (cumulative 100%)
+// Progress breakdown (5 sections, 20% each):
+// Step 0 - Profile complete (display_name, country, timezone): 20%
+// Step 1 - Experience level set: 20% (cumulative 40%)
+// Step 2 - Trading Preferences complete (risk, frequency, goals, investment range): 20% (cumulative 60%)
+// Step 3 - Brokerage connected: 20% (cumulative 80%)
+// Step 4 - Watchlist has at least 1 stock: 20% (cumulative 100%)
 
 export default function OnboardingStatusCard({ userId }: OnboardingStatusCardProps) {
   const navigate = useNavigate()
@@ -27,7 +28,7 @@ export default function OnboardingStatusCard({ userId }: OnboardingStatusCardPro
       try {
         const data = await getOnboardingData(userId)
         
-        // Check profile completion (required fields: display_name, country, timezone)
+        // Check Step 0: Profile completion (required fields: display_name, country, timezone)
         const profile: UserProfile = data.profile || {}
         const isProfileComplete = !!(
           profile.display_name?.trim() &&
@@ -35,30 +36,33 @@ export default function OnboardingStatusCard({ userId }: OnboardingStatusCardPro
           profile.timezone?.trim()
         )
         
-        // Check preferences completion (required fields: experience_level, risk_tolerance, trading_frequency, investment_goals, initial_investment_range)
+        // Check Step 1: Experience level set
         const prefs: TradingPreferences = data.preferences || {}
+        const isExperienceComplete = !!prefs.experience_level
+        
+        // Check Step 2: Trading Preferences complete (risk_tolerance, trading_frequency, investment_goals, initial_investment_range)
         const isPreferencesComplete = !!(
-          prefs.experience_level &&
           prefs.risk_tolerance &&
           prefs.trading_frequency &&
           prefs.investment_goals && prefs.investment_goals.length > 0 &&
           prefs.initial_investment_range
         )
         
-        // Check brokerage connection (at least 1 active connection)
+        // Check Step 3: Brokerage connection (at least 1 active connection)
         const brokerageConnections: BrokerageConnection[] = data.brokerageConnections || []
         const isBrokerageComplete = brokerageConnections.length > 0
         
-        // Check watchlist completion (at least 1 stock)
+        // Check Step 4: Watchlist completion (at least 1 stock)
         const watchlist: WatchlistStock[] = data.watchlist || []
         const isWatchlistComplete = watchlist.length > 0
         
-        // Calculate percentage (4 sections, 25% each)
+        // Calculate percentage (5 sections, 20% each)
         let progress = 0
-        if (isProfileComplete) progress += 25
-        if (isPreferencesComplete) progress += 25
-        if (isBrokerageComplete) progress += 25
-        if (isWatchlistComplete) progress += 25
+        if (isProfileComplete) progress += 20
+        if (isExperienceComplete) progress += 20
+        if (isPreferencesComplete) progress += 20
+        if (isBrokerageComplete) progress += 20
+        if (isWatchlistComplete) progress += 20
         setPercentage(progress)
         
       } catch (error) {

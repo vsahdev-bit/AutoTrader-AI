@@ -434,7 +434,7 @@ class NewsFeatureProvider:
                 SELECT
                     arrayJoin(symbols) as symbol,
                     sentiment_score,
-                    sentiment_confidence,
+                    confidence as sentiment_confidence,
                     published_at,
                     categories
                 FROM news_articles

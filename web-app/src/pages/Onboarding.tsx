@@ -9,6 +9,7 @@ import {
   UserProfile,
   TradingPreferences,
   WatchlistStock,
+  BrokerageConnection,
 } from '../services/onboardingApi'
 import StockSearch from '../components/StockSearch'
 import BrokerageConnect from '../components/BrokerageConnect'
@@ -50,6 +51,9 @@ export default function Onboarding() {
     initial_investment_range: undefined,
   })
   const [watchlist, setWatchlist] = useState<WatchlistStock[]>([])
+  // Note: brokerageConnections is loaded for calculating initial completedSteps,
+  // but the BrokerageConnect component manages its own connection state
+  const [, setBrokerageConnections] = useState<BrokerageConnection[]>([])
 
   // Get the user ID (prefer database ID, fallback to Google sub)
   const userId = user?.dbId || user?.sub
@@ -65,23 +69,72 @@ export default function Onboarding() {
       
       try {
         const data = await getOnboardingData(userId)
-        if (data.onboarding) {
-          setCurrentStep(data.onboarding.current_step || 0)
-          setCompletedSteps(data.onboarding.completed_steps || [])
+        
+        // Load profile data
+        const loadedProfile = data.profile ? {
+          display_name: data.profile.display_name || user?.name || '',
+          phone: data.profile.phone || '',
+          country: data.profile.country || '',
+          timezone: data.profile.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+        } : {
+          display_name: user?.name || '',
+          phone: '',
+          country: '',
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }
-        if (data.profile) {
-          setProfile({
-            display_name: data.profile.display_name || user?.name || '',
-            phone: data.profile.phone || '',
-            country: data.profile.country || '',
-            timezone: data.profile.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-          })
-        }
+        setProfile(loadedProfile)
+        
+        // Load preferences data
+        const loadedPreferences = data.preferences || preferences
         if (data.preferences) {
           setPreferences(data.preferences)
         }
-        if (data.watchlist) {
-          setWatchlist(data.watchlist)
+        
+        // Load watchlist data
+        const loadedWatchlist = data.watchlist || []
+        setWatchlist(loadedWatchlist)
+        
+        // Load brokerage connections
+        const loadedBrokerageConnections = data.brokerageConnections || []
+        setBrokerageConnections(loadedBrokerageConnections)
+        
+        // Calculate completedSteps dynamically based on actual data
+        const calculatedCompletedSteps: number[] = []
+        
+        // Step 0: Profile - complete if display_name, country, and timezone are filled
+        if (loadedProfile.display_name?.trim() && loadedProfile.country?.trim() && loadedProfile.timezone?.trim()) {
+          calculatedCompletedSteps.push(0)
+        }
+        
+        // Step 1: Experience - complete if experience_level is set
+        if (loadedPreferences.experience_level) {
+          calculatedCompletedSteps.push(1)
+        }
+        
+        // Step 2: Preferences - complete if risk_tolerance, trading_frequency, investment_goals, and initial_investment_range are set
+        if (loadedPreferences.risk_tolerance && 
+            loadedPreferences.trading_frequency && 
+            loadedPreferences.investment_goals && loadedPreferences.investment_goals.length > 0 &&
+            loadedPreferences.initial_investment_range) {
+          calculatedCompletedSteps.push(2)
+        }
+        
+        // Step 3: Brokerage - complete if at least 1 brokerage connection exists
+        if (loadedBrokerageConnections.length > 0) {
+          calculatedCompletedSteps.push(3)
+        }
+        
+        // Step 4: Watchlist - complete if at least 1 stock in watchlist
+        if (loadedWatchlist.length > 0) {
+          calculatedCompletedSteps.push(4)
+        }
+        
+        setCompletedSteps(calculatedCompletedSteps)
+        
+        // Set current step from database or default to 0
+        if (data.onboarding) {
+          const step = data.onboarding.current_step || 0
+          setCurrentStep(Math.min(step, STEPS.length - 1))
         }
       } catch (error) {
         console.error('Error loading onboarding data:', error)
@@ -257,14 +310,16 @@ export default function Onboarding() {
             {STEPS.map((step, index) => (
               <div key={step.id} className="flex items-center">
                 <div className="flex flex-col items-center">
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center font-medium text-sm transition-all ${
+                  <button
+                    onClick={() => setCurrentStep(step.id)}
+                    className={`w-10 h-10 rounded-full flex items-center justify-center font-medium text-sm transition-all cursor-pointer hover:scale-110 ${
                       completedSteps.includes(step.id)
-                        ? 'bg-green-500 text-white'
+                        ? 'bg-green-500 text-white hover:bg-green-600'
                         : currentStep === step.id
                         ? 'bg-blue-600 text-white'
-                        : 'bg-gray-200 text-gray-500'
+                        : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
                     }`}
+                    title={`Go to ${step.title}`}
                   >
                     {completedSteps.includes(step.id) ? (
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -273,10 +328,13 @@ export default function Onboarding() {
                     ) : (
                       step.id + 1
                     )}
-                  </div>
-                  <span className={`mt-2 text-xs font-medium ${currentStep === step.id ? 'text-blue-600' : 'text-gray-500'}`}>
+                  </button>
+                  <button
+                    onClick={() => setCurrentStep(step.id)}
+                    className={`mt-2 text-xs font-medium cursor-pointer hover:underline ${currentStep === step.id ? 'text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
                     {step.title}
-                  </span>
+                  </button>
                 </div>
                 {index < STEPS.length - 1 && (
                   <div className={`w-full h-1 mx-2 ${completedSteps.includes(step.id) ? 'bg-green-500' : 'bg-gray-200'}`} style={{ minWidth: '60px' }} />
@@ -597,8 +655,13 @@ export default function Onboarding() {
               </p>
               <BrokerageConnect
                 userId={userId || ''}
-                onConnectionChange={() => {
-                  // Connection status is managed by BrokerageConnect component
+                onConnectionChange={(hasConnection) => {
+                  // Update completedSteps when brokerage connection changes
+                  if (hasConnection && !completedSteps.includes(3)) {
+                    setCompletedSteps([...completedSteps, 3])
+                  } else if (!hasConnection && completedSteps.includes(3)) {
+                    setCompletedSteps(completedSteps.filter(s => s !== 3))
+                  }
                 }}
               />
             </div>

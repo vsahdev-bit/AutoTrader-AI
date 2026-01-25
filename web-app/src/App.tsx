@@ -8,6 +8,12 @@ import Home from './pages/Home'
 import Onboarding from './pages/Onboarding'
 import StockRecommendations from './pages/StockRecommendations'
 import Connectors from './pages/Connectors'
+// Public pages
+import Pricing from './pages/Pricing'
+import FAQ from './pages/FAQ'
+import Terms from './pages/legal/Terms'
+import Privacy from './pages/legal/Privacy'
+import RiskDisclosure from './pages/legal/RiskDisclosure'
 
 const queryClient = new QueryClient()
 
@@ -59,6 +65,15 @@ function AppRoutes() {
       <Routes>
         {/* Public route */}
         <Route path="/" element={<Home />} />
+        
+        {/* Public marketing pages */}
+        <Route path="/pricing" element={<Pricing />} />
+        <Route path="/faq" element={<FAQ />} />
+        
+        {/* Legal pages */}
+        <Route path="/terms" element={<Terms />} />
+        <Route path="/privacy" element={<Privacy />} />
+        <Route path="/risk-disclosure" element={<RiskDisclosure />} />
         
         {/* Stock Recommendations - public route for viewing recommendation history */}
         <Route path="/recommendations" element={<StockRecommendations />} />

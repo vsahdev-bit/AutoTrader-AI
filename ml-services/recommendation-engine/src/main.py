@@ -20,16 +20,26 @@ The Recommendation Engine is part of the "always-on" intelligence layer:
    - Technical features computed on-demand
    - Combined feature vectors for ML model
 
-3. ML Inference (this service):
-   - Rule-based model (current implementation)
-   - Future: Trained ML model (XGBoost, Neural Network)
-   - Confidence calibration
-   - Explainable outputs
+3. Regime Classification (NEW):
+   - Classifies market into regimes (volatility, trend, liquidity, information)
+   - Adapts signal weights based on current regime
+   - Prevents applying wrong signals in wrong market conditions
 
-4. Output:
+4. ML Inference (this service):
+   - Rule-based model with regime-adaptive weights
+   - Future: Trained ML model (XGBoost, Neural Network)
+   - Confidence calibration scaled by regime
+   - Explainable outputs with regime context
+
+5. Output:
    - REST API for real-time recommendations
    - Cached results in Redis
    - Stored in PostgreSQL for history
+
+Decision Flow:
+-------------
+Raw Data → Feature Engineering → Regime Classification → Signal Weighting (by regime)
+→ Expected Value Estimation → Confidence Scoring → Ranked Recommendations
 
 API Endpoints:
 -------------
@@ -37,6 +47,7 @@ API Endpoints:
 - POST /recommendations     - Generate recommendations for symbols
 - GET  /recommendations/{symbol} - Get latest recommendation for symbol
 - GET  /features/{symbol}   - Get current features for symbol (debugging)
+- GET  /regime/{symbol}     - Get current regime classification for symbol
 
 Technology Stack:
 ----------------
@@ -49,14 +60,37 @@ Technology Stack:
 Port: 8000 (configurable via environment)
 """
 import logging
+import math
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 import uvicorn
 import asyncpg
 import json
+
+# Import regime classifier
+try:
+    from .regime_classifier import (
+        RegimeClassifier,
+        RegimeState,
+        RegimeSignalWeights,
+        VolatilityRegime,
+        TrendRegime,
+        LiquidityRegime,
+        InformationRegime,
+    )
+except ImportError:
+    from regime_classifier import (
+        RegimeClassifier,
+        RegimeState,
+        RegimeSignalWeights,
+        VolatilityRegime,
+        TrendRegime,
+        LiquidityRegime,
+        InformationRegime,
+    )
 
 # Configure logging
 logging.basicConfig(
@@ -81,6 +115,54 @@ class RecommendationRequest(BaseModel):
     user_id: str = Field(..., description="User ID requesting recommendations")
     symbols: List[str] = Field(..., description="Stock symbols to analyze")
     include_features: bool = Field(False, description="Include feature details in response")
+
+
+class RegimeInfo(BaseModel):
+    """Market regime information for a symbol."""
+    regime_label: str = Field(..., description="Human-readable regime label")
+    risk_level: str = Field(..., description="Overall risk level (normal/high)")
+    volatility: str = Field(..., description="Volatility regime (low/normal/high/extreme)")
+    trend: str = Field(..., description="Trend regime (strong_uptrend/uptrend/mean_reverting/choppy/downtrend/strong_downtrend)")
+    liquidity: str = Field(..., description="Liquidity regime (high/normal/thin/illiquid)")
+    information: str = Field(..., description="Information regime (quiet/normal/news_driven/social_driven/earnings)")
+    risk_score: float = Field(..., ge=0, le=1, description="Regime risk score (0-1)")
+    regime_confidence: float = Field(..., ge=0, le=1, description="Confidence in regime classification (0-1)")
+    warnings: List[str] = Field(default_factory=list, description="Risk warnings for current regime")
+    explanations: List[str] = Field(default_factory=list, description="Regime explanations")
+
+
+class PositionSizingInfo(BaseModel):
+    """Position sizing recommendation based on regime."""
+    size_multiplier: float = Field(..., ge=0.1, le=1.5, description="Position size multiplier (1.0 = standard)")
+    max_position_percent: float = Field(..., description="Maximum position as % of portfolio")
+    scale_in_entries: int = Field(..., ge=1, description="Number of entries to scale in")
+    scale_in_interval_hours: int = Field(..., ge=0, description="Hours between scale-in entries")
+    risk_per_trade_percent: float = Field(..., description="Risk per trade as % of portfolio")
+    reasoning: str = Field(..., description="Explanation for sizing recommendation")
+
+
+class StopLossInfo(BaseModel):
+    """Stop-loss recommendation based on regime."""
+    atr_multiplier: float = Field(..., description="Stop-loss as ATR multiplier")
+    percent_from_entry: float = Field(..., description="Stop-loss as % from entry price")
+    use_trailing_stop: bool = Field(..., description="Whether to use trailing stop")
+    trailing_activation_percent: float = Field(..., description="Profit % before trailing activates")
+    take_profit_atr_multiplier: float = Field(..., description="Take-profit as ATR multiplier")
+    risk_reward_ratio: float = Field(..., description="Target risk:reward ratio")
+    time_stop_days: Optional[int] = Field(None, description="Exit after N days if no movement")
+    reasoning: str = Field(..., description="Explanation for stop-loss recommendation")
+
+
+class SignalWeightsInfo(BaseModel):
+    """Signal weights applied for current regime."""
+    news_sentiment: float = Field(..., description="Weight for news sentiment signal")
+    news_momentum: float = Field(..., description="Weight for news momentum signal")
+    technical_trend: float = Field(..., description="Weight for technical trend signal")
+    technical_momentum: float = Field(..., description="Weight for technical momentum signal")
+    confidence_multiplier: float = Field(..., description="Confidence multiplier for regime")
+    trade_frequency_modifier: float = Field(..., description="Trade frequency modifier")
+    position_sizing: Optional[PositionSizingInfo] = Field(None, description="Position sizing recommendation")
+    stop_loss: Optional[StopLossInfo] = Field(None, description="Stop-loss recommendation")
 
 
 class SignalExplanation(BaseModel):
@@ -122,14 +204,17 @@ class Recommendation(BaseModel):
     article_count_24h: Optional[int] = Field(None, description="Number of articles in last 24 hours")
     explanation: Dict[str, Any] = Field(..., description="Human-readable explanation")
     signals: Optional[SignalExplanation] = Field(None, description="Signal breakdown")
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    # Regime information (NEW)
+    regime: Optional[RegimeInfo] = Field(None, description="Current market regime classification")
+    signal_weights: Optional[SignalWeightsInfo] = Field(None, description="Signal weights applied for regime")
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class RecommendationResponse(BaseModel):
     """Response containing recommendations for requested symbols."""
     user_id: str
     recommendations: List[Recommendation]
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class HealthResponse(BaseModel):
@@ -257,21 +342,34 @@ async def get_technical_provider():
 
 class RecommendationEngine:
     """
-    Core recommendation engine logic.
+    Core recommendation engine logic with regime-adaptive signal weighting.
     
     Combines news sentiment analysis with technical indicators to generate
-    trading recommendations. Uses a weighted scoring system with configurable
-    weights for different signal types.
+    trading recommendations. Uses a REGIME-ADAPTIVE weighted scoring system
+    that adjusts weights based on current market conditions.
     
-    Signal Weights (configurable, should sum to 1.0):
+    Key Innovation - Regime Classification:
+    The engine now classifies market conditions across 4 dimensions:
+    1. Volatility: Low / Normal / High / Extreme
+    2. Trend: Strong Uptrend / Uptrend / Mean-Reverting / Choppy / Downtrend / Strong Downtrend
+    3. Liquidity: High / Normal / Thin / Illiquid
+    4. Information: Quiet / Normal / News-Driven / Social-Driven / Earnings
+    
+    Default Signal Weights (adjusted by regime):
     - News sentiment: 30%
     - News momentum: 20%
     - Technical trend: 25%
     - Technical momentum: 25%
     
+    Regime Effects:
+    - Trending markets: Technical trend signals weighted higher
+    - Choppy markets: Reduce all signals, lower confidence
+    - News-driven: News sentiment weighted higher
+    - High volatility: Reduce momentum signals, scale down confidence
+    
     Thresholds:
-    - BUY: Combined score > 0.25
-    - SELL: Combined score < -0.25
+    - BUY: Combined score > 0.6 (normalized > 0.8)
+    - SELL: Combined score < 0.0 (normalized < 0.5)
     - HOLD: Otherwise
     
     Signal Agreement Bonus:
@@ -279,27 +377,56 @@ class RecommendationEngine:
     - When they disagree, confidence is reduced
     """
     
-    # Signal weights (should sum to 1.0)
-    WEIGHT_NEWS_SENTIMENT = 0.30
-    WEIGHT_NEWS_MOMENTUM = 0.20
-    WEIGHT_TECHNICAL_TREND = 0.25
-    WEIGHT_TECHNICAL_MOMENTUM = 0.25
+    # Default signal weights (will be adjusted by regime)
+    DEFAULT_WEIGHT_NEWS_SENTIMENT = 0.30
+    DEFAULT_WEIGHT_NEWS_MOMENTUM = 0.20
+    DEFAULT_WEIGHT_TECHNICAL_TREND = 0.25
+    DEFAULT_WEIGHT_TECHNICAL_MOMENTUM = 0.25
     
-    # Action thresholds (score range is -1 to 1, normalized to 0 to 1 for display)
-    # Normalized score formula: normalized = (raw + 1) / 2
-    # BUY: normalized score > 0.8 → raw score > 0.6
-    # SELL: normalized score < 0.5 → raw score < 0.0
-    # HOLD: 0.5 <= normalized score <= 0.8 → 0.0 <= raw score <= 0.6
-    BUY_THRESHOLD = 0.6   # Raw score threshold: normalized > 0.8
-    SELL_THRESHOLD = 0.0  # Raw score threshold: normalized < 0.5
+    # Default action thresholds (score range is -1 to 1, normalized to 0 to 1 for display)
+    # These may be adjusted by regime - see get_regime_adjusted_thresholds()
+    DEFAULT_BUY_THRESHOLD = 0.6   # Raw score threshold: normalized > 0.8
+    DEFAULT_SELL_THRESHOLD = 0.0  # Raw score threshold: normalized < 0.5
+    
+    # Regime-specific threshold adjustments
+    # In risky regimes, we require stronger signals (higher thresholds)
+    # In favorable regimes, we can act on weaker signals (lower thresholds)
+    REGIME_THRESHOLD_ADJUSTMENTS = {
+        # Volatility adjustments
+        "extreme_volatility": {"buy_adjust": 0.15, "sell_adjust": -0.10},  # Much stricter
+        "high_volatility": {"buy_adjust": 0.10, "sell_adjust": -0.05},     # Stricter
+        "low_volatility": {"buy_adjust": -0.05, "sell_adjust": 0.02},      # More lenient
+        
+        # Trend adjustments
+        "strong_uptrend": {"buy_adjust": -0.10, "sell_adjust": 0.10},      # Easier to buy
+        "strong_downtrend": {"buy_adjust": 0.10, "sell_adjust": -0.10},    # Easier to sell
+        "choppy": {"buy_adjust": 0.15, "sell_adjust": -0.05},              # Much stricter for buy
+        
+        # Information adjustments
+        "news_driven": {"buy_adjust": 0.05, "sell_adjust": -0.03},         # Slightly stricter
+        "social_driven": {"buy_adjust": 0.10, "sell_adjust": -0.05},       # Stricter (noise)
+        "earnings": {"buy_adjust": 0.08, "sell_adjust": -0.05},            # Stricter (uncertainty)
+        
+        # Liquidity adjustments
+        "thin_liquidity": {"buy_adjust": 0.08, "sell_adjust": -0.05},      # Stricter
+        "illiquid": {"buy_adjust": 0.15, "sell_adjust": -0.10},            # Much stricter
+    }
     
     # Confidence adjustments
     AGREEMENT_BONUS = 0.15
     DISAGREEMENT_PENALTY = 0.10
     
-    def __init__(self):
+    def __init__(self, enable_regime: bool = True):
+        """
+        Initialize the recommendation engine.
+        
+        Args:
+            enable_regime: Whether to use regime-adaptive weighting (default: True)
+        """
         self.news_provider = None
         self.technical_provider = None
+        self.regime_classifier = RegimeClassifier() if enable_regime else None
+        self.enable_regime = enable_regime
     
     async def initialize(self):
         """Initialize the recommendation engine with all feature providers."""
@@ -308,7 +435,89 @@ class RecommendationEngine:
         
         logger.info(f"Recommendation engine initialized - "
                    f"News: {'✓' if self.news_provider else '✗'}, "
-                   f"Technical: {'✓' if self.technical_provider else '✗'}")
+                   f"Technical: {'✓' if self.technical_provider else '✗'}, "
+                   f"Regime: {'✓' if self.regime_classifier else '✗'}")
+    
+    def get_regime_adjusted_thresholds(
+        self,
+        regime_state: Optional[RegimeState],
+    ) -> tuple:
+        """
+        Get BUY/SELL thresholds adjusted for current regime.
+        
+        In risky regimes (high volatility, choppy, illiquid), we require
+        stronger signals before acting. In favorable regimes, we can act
+        on weaker signals.
+        
+        Args:
+            regime_state: Current regime classification
+            
+        Returns:
+            Tuple of (buy_threshold, sell_threshold)
+        """
+        buy_threshold = self.DEFAULT_BUY_THRESHOLD
+        sell_threshold = self.DEFAULT_SELL_THRESHOLD
+        
+        if not regime_state:
+            return buy_threshold, sell_threshold
+        
+        # Apply volatility adjustments
+        if regime_state.volatility == VolatilityRegime.EXTREME:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["extreme_volatility"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.volatility == VolatilityRegime.HIGH:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["high_volatility"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.volatility == VolatilityRegime.LOW:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["low_volatility"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        
+        # Apply trend adjustments
+        if regime_state.trend == TrendRegime.STRONG_UPTREND:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["strong_uptrend"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.trend == TrendRegime.STRONG_DOWNTREND:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["strong_downtrend"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.trend == TrendRegime.CHOPPY:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["choppy"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        
+        # Apply information regime adjustments
+        if regime_state.information == InformationRegime.NEWS_DRIVEN:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["news_driven"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.information == InformationRegime.SOCIAL_DRIVEN:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["social_driven"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.information == InformationRegime.EARNINGS:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["earnings"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        
+        # Apply liquidity adjustments
+        if regime_state.liquidity == LiquidityRegime.THIN:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["thin_liquidity"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        elif regime_state.liquidity == LiquidityRegime.ILLIQUID:
+            adj = self.REGIME_THRESHOLD_ADJUSTMENTS["illiquid"]
+            buy_threshold += adj["buy_adjust"]
+            sell_threshold += adj["sell_adjust"]
+        
+        # Clamp thresholds to reasonable bounds
+        buy_threshold = max(0.3, min(0.9, buy_threshold))
+        sell_threshold = max(-0.3, min(0.3, sell_threshold))
+        
+        return buy_threshold, sell_threshold
     
     async def generate_recommendation(
         self,
@@ -319,14 +528,23 @@ class RecommendationEngine:
         Generate a recommendation for a single symbol.
         
         Combines news sentiment and technical analysis to produce a
-        BUY/SELL/HOLD recommendation with confidence score.
+        BUY/SELL/HOLD recommendation with confidence score. Uses regime
+        classification to adapt signal weights to current market conditions.
+        
+        Decision Flow:
+        1. Fetch features (news + technical)
+        2. Classify market regime
+        3. Get regime-adaptive signal weights
+        4. Calculate weighted scores
+        5. Apply regime confidence scaling
+        6. Generate recommendation with regime context
         
         Args:
             symbol: Stock ticker symbol
             include_features: Whether to include detailed feature info
             
         Returns:
-            Recommendation object with action, confidence, and explanation
+            Recommendation object with action, confidence, regime info, and explanation
         """
         # Get news features
         news_features = None
@@ -344,29 +562,86 @@ class RecommendationEngine:
             except Exception as e:
                 logger.warning(f"Failed to get technical features for {symbol}: {e}")
         
+        # =====================================================================
+        # REGIME CLASSIFICATION (NEW)
+        # Classify current market regime and get adaptive signal weights
+        # =====================================================================
+        regime_state: Optional[RegimeState] = None
+        regime_weights: Optional[RegimeSignalWeights] = None
+        regime_explanation: Optional[Dict[str, Any]] = None
+        
+        if self.enable_regime and self.regime_classifier:
+            try:
+                # Classify regime based on features
+                regime_state = self.regime_classifier.classify(
+                    symbol=symbol,
+                    technical_features=technical_features,
+                    news_features=news_features,
+                )
+                
+                # Get regime-adaptive signal weights
+                regime_weights = self.regime_classifier.get_signal_weights(regime_state)
+                
+                # Get regime explanation for output
+                regime_explanation = self.regime_classifier.get_regime_explanation(regime_state)
+                
+                logger.debug(f"Regime for {symbol}: {regime_state.get_regime_label()}, "
+                           f"risk={regime_state.regime_risk_score:.2f}")
+                
+            except Exception as e:
+                logger.warning(f"Regime classification failed for {symbol}: {e}")
+                regime_state = None
+                regime_weights = None
+        
+        # Determine signal weights (regime-adaptive or default)
+        if regime_weights:
+            weight_news_sentiment = regime_weights.news_sentiment
+            weight_news_momentum = regime_weights.news_momentum
+            weight_technical_trend = regime_weights.technical_trend
+            weight_technical_momentum = regime_weights.technical_momentum
+        else:
+            weight_news_sentiment = self.DEFAULT_WEIGHT_NEWS_SENTIMENT
+            weight_news_momentum = self.DEFAULT_WEIGHT_NEWS_MOMENTUM
+            weight_technical_trend = self.DEFAULT_WEIGHT_TECHNICAL_TREND
+            weight_technical_momentum = self.DEFAULT_WEIGHT_TECHNICAL_MOMENTUM
+        
         # Calculate scores from each signal type
         news_sentiment_score = self._calculate_news_sentiment_score(news_features)
         news_momentum_score = self._calculate_news_momentum_score(news_features)
         technical_trend_score = self._calculate_technical_trend_score(technical_features)
         technical_momentum_score = self._calculate_technical_momentum_score(technical_features)
         
-        # Combine scores with weights
+        # Combine scores with REGIME-ADAPTIVE weights
+        # Handle NaN values by treating them as 0 (neutral)
+        safe_news_sentiment = 0.0 if math.isnan(news_sentiment_score) else news_sentiment_score
+        safe_news_momentum = 0.0 if math.isnan(news_momentum_score) else news_momentum_score
+        safe_technical_trend = 0.0 if math.isnan(technical_trend_score) else technical_trend_score
+        safe_technical_momentum = 0.0 if math.isnan(technical_momentum_score) else technical_momentum_score
+        
         combined_score = (
-            news_sentiment_score * self.WEIGHT_NEWS_SENTIMENT +
-            news_momentum_score * self.WEIGHT_NEWS_MOMENTUM +
-            technical_trend_score * self.WEIGHT_TECHNICAL_TREND +
-            technical_momentum_score * self.WEIGHT_TECHNICAL_MOMENTUM
+            safe_news_sentiment * weight_news_sentiment +
+            safe_news_momentum * weight_news_momentum +
+            safe_technical_trend * weight_technical_trend +
+            safe_technical_momentum * weight_technical_momentum
         )
         
-        # Determine action
-        if combined_score > self.BUY_THRESHOLD:
+        # Get regime-adjusted thresholds
+        buy_threshold, sell_threshold = self.get_regime_adjusted_thresholds(regime_state)
+        
+        # Determine action using regime-adjusted thresholds
+        if combined_score > buy_threshold:
             action = "BUY"
-        elif combined_score < self.SELL_THRESHOLD:
+        elif combined_score < sell_threshold:
             action = "SELL"
         else:
             action = "HOLD"
         
-        # Calculate confidence (based on signal agreement and strength)
+        # Log threshold adjustments for debugging
+        if regime_state:
+            logger.debug(f"Regime thresholds for {symbol}: buy={buy_threshold:.2f}, sell={sell_threshold:.2f} "
+                        f"(default: buy={self.DEFAULT_BUY_THRESHOLD}, sell={self.DEFAULT_SELL_THRESHOLD})")
+        
+        # Calculate base confidence (based on signal agreement and strength)
         confidence = self._calculate_confidence(
             news_sentiment_score=news_sentiment_score,
             news_momentum_score=news_momentum_score,
@@ -376,6 +651,11 @@ class RecommendationEngine:
             news_features=news_features,
             technical_features=technical_features,
         )
+        
+        # Apply regime confidence multiplier
+        if regime_weights:
+            confidence = confidence * regime_weights.confidence_multiplier
+            confidence = max(0.0, min(1.0, confidence))
         
         # Fetch news articles from ClickHouse for LLM context
         news_articles = []
@@ -400,7 +680,7 @@ class RecommendationEngine:
         except Exception as e:
             logger.warning(f"Failed to generate LLM explanation for {symbol}: {e}")
         
-        # Generate explanation
+        # Generate explanation (include regime context)
         explanation = self._generate_explanation(
             symbol=symbol,
             action=action,
@@ -409,6 +689,7 @@ class RecommendationEngine:
             technical_features=technical_features,
             llm_analysis=llm_analysis,
             news_articles=news_articles,
+            regime_explanation=regime_explanation,
         )
         
         # Build signals breakdown
@@ -429,6 +710,64 @@ class RecommendationEngine:
         # Normalize score to 0-1 range
         normalized_score = (combined_score + 1) / 2
         
+        # Build regime info for response
+        regime_info = None
+        if regime_state and regime_explanation:
+            regime_info = RegimeInfo(
+                regime_label=regime_explanation.get("regime_label", "Unknown"),
+                risk_level=regime_explanation.get("risk_level", "normal"),
+                volatility=regime_state.volatility.value,
+                trend=regime_state.trend.value,
+                liquidity=regime_state.liquidity.value,
+                information=regime_state.information.value,
+                risk_score=regime_state.regime_risk_score,
+                regime_confidence=regime_state.regime_confidence,
+                warnings=regime_explanation.get("warnings", []),
+                explanations=regime_explanation.get("explanations", []),
+            )
+        
+        # Build signal weights info for response
+        signal_weights_info = None
+        if regime_weights:
+            # Build position sizing info
+            position_sizing_info = None
+            if regime_weights.position_sizing:
+                ps = regime_weights.position_sizing
+                position_sizing_info = PositionSizingInfo(
+                    size_multiplier=round(ps.size_multiplier, 3),
+                    max_position_percent=round(ps.max_position_percent, 2),
+                    scale_in_entries=ps.scale_in_entries,
+                    scale_in_interval_hours=ps.scale_in_interval_hours,
+                    risk_per_trade_percent=round(ps.risk_per_trade_percent, 3),
+                    reasoning=ps.reasoning,
+                )
+            
+            # Build stop-loss info
+            stop_loss_info = None
+            if regime_weights.stop_loss:
+                sl = regime_weights.stop_loss
+                stop_loss_info = StopLossInfo(
+                    atr_multiplier=round(sl.atr_multiplier, 2),
+                    percent_from_entry=round(sl.percent_from_entry, 2),
+                    use_trailing_stop=sl.use_trailing_stop,
+                    trailing_activation_percent=round(sl.trailing_activation_percent, 2),
+                    take_profit_atr_multiplier=round(sl.take_profit_atr_multiplier, 2),
+                    risk_reward_ratio=round(sl.risk_reward_ratio, 2),
+                    time_stop_days=sl.time_stop_days,
+                    reasoning=sl.reasoning,
+                )
+            
+            signal_weights_info = SignalWeightsInfo(
+                news_sentiment=round(regime_weights.news_sentiment, 4),
+                news_momentum=round(regime_weights.news_momentum, 4),
+                technical_trend=round(regime_weights.technical_trend, 4),
+                technical_momentum=round(regime_weights.technical_momentum, 4),
+                confidence_multiplier=round(regime_weights.confidence_multiplier, 3),
+                trade_frequency_modifier=round(regime_weights.trade_frequency_modifier, 3),
+                position_sizing=position_sizing_info,
+                stop_loss=stop_loss_info,
+            )
+        
         return Recommendation(
             symbol=symbol,
             action=action,
@@ -447,6 +786,8 @@ class RecommendationEngine:
             article_count_24h=article_count_24h,
             explanation=explanation,
             signals=signals,
+            regime=regime_info,
+            signal_weights=signal_weights_info,
         )
     
     def _calculate_news_sentiment_score(self, news_features) -> float:
@@ -813,12 +1154,14 @@ Be specific, cite actual data points, and avoid generic statements."""
         technical_features,
         llm_analysis: Optional[str] = None,
         news_articles: Optional[List[Dict[str, Any]]] = None,
+        regime_explanation: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate human-readable explanation for the recommendation."""
         
         # Build summary components
         news_summary = ""
         technical_summary = ""
+        regime_summary = ""
         
         # News analysis summary
         if news_features and news_features.article_count_1d > 0:
@@ -836,6 +1179,15 @@ Be specific, cite actual data points, and avoid generic statements."""
         else:
             technical_summary = "Technical data unavailable."
         
+        # Regime summary
+        if regime_explanation:
+            regime_label = regime_explanation.get("regime_label", "")
+            if regime_label and regime_label != "Normal Market":
+                regime_summary = f"Market regime: {regime_label}."
+            warnings = regime_explanation.get("warnings", [])
+            if warnings:
+                regime_summary += f" ⚠️ {warnings[0]}"
+        
         # Action-specific summary
         if action == "BUY":
             action_summary = f"Consider buying {symbol}."
@@ -844,13 +1196,28 @@ Be specific, cite actual data points, and avoid generic statements."""
         else:
             action_summary = f"Hold current position in {symbol}."
         
-        summary = f"{news_summary} {technical_summary} {action_summary}"
+        # Combine summaries
+        summary_parts = [s for s in [regime_summary, news_summary, technical_summary, action_summary] if s]
+        summary = " ".join(summary_parts)
         
         explanation = {
             "summary": summary,
             "score": round(combined_score, 3),
             "action": action,
         }
+        
+        # Add regime information to explanation
+        if regime_explanation:
+            explanation["regime"] = {
+                "label": regime_explanation.get("regime_label", "Unknown"),
+                "risk_level": regime_explanation.get("risk_level", "normal"),
+                "dimensions": regime_explanation.get("dimensions", {}),
+                "metrics": regime_explanation.get("metrics", {}),
+            }
+            if regime_explanation.get("warnings"):
+                explanation["regime"]["warnings"] = regime_explanation["warnings"]
+            if regime_explanation.get("explanations"):
+                explanation["regime"]["details"] = regime_explanation["explanations"]
         
         # Build factors list for clear explanation of what drove the recommendation
         factors = []
@@ -894,7 +1261,7 @@ Be specific, cite actual data points, and avoid generic statements."""
                 ),
             }
         
-        # Add recent news articles for context
+        # Add recent news articles for context with URLs
         if news_articles:
             explanation["recent_articles"] = [
                 {
@@ -904,6 +1271,7 @@ Be specific, cite actual data points, and avoid generic statements."""
                         "positive" if (article.get("sentiment_score") or 0) > 0.1 else
                         "negative" if (article.get("sentiment_score") or 0) < -0.1 else "neutral"
                     ),
+                    "url": article.get("url", ""),
                 }
                 for article in news_articles[:5]
             ]
@@ -1359,6 +1727,145 @@ async def get_technical_analysis(symbol: str):
         }
     except Exception as e:
         logger.error(f"Failed to get technical analysis for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Regime Classification Endpoint
+# =============================================================================
+
+class RegimeResponse(BaseModel):
+    """Response model for regime classification endpoint."""
+    symbol: str
+    regime: RegimeInfo
+    signal_weights: SignalWeightsInfo
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@app.get("/regime/{symbol}", response_model=RegimeResponse)
+async def get_regime(symbol: str):
+    """
+    Get the current market regime classification for a symbol.
+    
+    This endpoint analyzes technical and news features to classify the market
+    into one of several regimes across 4 dimensions:
+    
+    - **Volatility**: low / normal / high / extreme
+    - **Trend**: strong_uptrend / uptrend / mean_reverting / choppy / downtrend / strong_downtrend
+    - **Liquidity**: high / normal / thin / illiquid
+    - **Information**: quiet / normal / news_driven / social_driven / earnings
+    
+    The response includes:
+    - Regime classification for each dimension
+    - Risk score (0-1, higher = riskier)
+    - Signal weights optimized for the current regime
+    - Warnings and explanations
+    
+    Args:
+        symbol: Stock ticker symbol (e.g., AAPL, GOOGL)
+        
+    Returns:
+        RegimeResponse with full regime classification and signal weights
+    """
+    symbol = symbol.upper()
+    
+    try:
+        engine = await get_engine()
+        
+        # Get features for regime classification
+        news_features = None
+        if engine.news_provider:
+            try:
+                news_features = await engine.news_provider.get_features_single(symbol)
+            except Exception as e:
+                logger.warning(f"Failed to get news features for {symbol}: {e}")
+        
+        technical_features = None
+        if engine.technical_provider:
+            try:
+                technical_features = await engine.technical_provider.get_features(symbol)
+            except Exception as e:
+                logger.warning(f"Failed to get technical features for {symbol}: {e}")
+        
+        # Classify regime
+        if not engine.regime_classifier:
+            raise HTTPException(
+                status_code=503,
+                detail="Regime classification not available"
+            )
+        
+        regime_state = engine.regime_classifier.classify(
+            symbol=symbol,
+            technical_features=technical_features,
+            news_features=news_features,
+        )
+        
+        regime_weights = engine.regime_classifier.get_signal_weights(regime_state)
+        regime_explanation = engine.regime_classifier.get_regime_explanation(regime_state)
+        
+        # Build response
+        regime_info = RegimeInfo(
+            regime_label=regime_explanation.get("regime_label", "Unknown"),
+            risk_level=regime_explanation.get("risk_level", "normal"),
+            volatility=regime_state.volatility.value,
+            trend=regime_state.trend.value,
+            liquidity=regime_state.liquidity.value,
+            information=regime_state.information.value,
+            risk_score=regime_state.regime_risk_score,
+            regime_confidence=regime_state.regime_confidence,
+            warnings=regime_explanation.get("warnings", []),
+            explanations=regime_explanation.get("explanations", []),
+        )
+        
+        # Build position sizing info
+        position_sizing_info = None
+        if regime_weights.position_sizing:
+            ps = regime_weights.position_sizing
+            position_sizing_info = PositionSizingInfo(
+                size_multiplier=round(ps.size_multiplier, 3),
+                max_position_percent=round(ps.max_position_percent, 2),
+                scale_in_entries=ps.scale_in_entries,
+                scale_in_interval_hours=ps.scale_in_interval_hours,
+                risk_per_trade_percent=round(ps.risk_per_trade_percent, 3),
+                reasoning=ps.reasoning,
+            )
+        
+        # Build stop-loss info
+        stop_loss_info = None
+        if regime_weights.stop_loss:
+            sl = regime_weights.stop_loss
+            stop_loss_info = StopLossInfo(
+                atr_multiplier=round(sl.atr_multiplier, 2),
+                percent_from_entry=round(sl.percent_from_entry, 2),
+                use_trailing_stop=sl.use_trailing_stop,
+                trailing_activation_percent=round(sl.trailing_activation_percent, 2),
+                take_profit_atr_multiplier=round(sl.take_profit_atr_multiplier, 2),
+                risk_reward_ratio=round(sl.risk_reward_ratio, 2),
+                time_stop_days=sl.time_stop_days,
+                reasoning=sl.reasoning,
+            )
+        
+        signal_weights_info = SignalWeightsInfo(
+            news_sentiment=round(regime_weights.news_sentiment, 4),
+            news_momentum=round(regime_weights.news_momentum, 4),
+            technical_trend=round(regime_weights.technical_trend, 4),
+            technical_momentum=round(regime_weights.technical_momentum, 4),
+            confidence_multiplier=round(regime_weights.confidence_multiplier, 3),
+            trade_frequency_modifier=round(regime_weights.trade_frequency_modifier, 3),
+            position_sizing=position_sizing_info,
+            stop_loss=stop_loss_info,
+        )
+        
+        return RegimeResponse(
+            symbol=symbol,
+            regime=regime_info,
+            signal_weights=signal_weights_info,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get regime for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
