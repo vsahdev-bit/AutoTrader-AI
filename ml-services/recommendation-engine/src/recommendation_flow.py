@@ -2,7 +2,7 @@
 Recommendation Flow Service
 ============================
 
-Scheduled service that runs every 2 hours to:
+Scheduled service that runs at fixed times (7:30 AM and 12:00 PM PST daily) to:
 1. Collect data from all sources for each stock in the watchlist
 2. Normalize the data
 3. Generate recommendations using the RecommendationEngine
@@ -1186,7 +1186,7 @@ class RecommendationFlowService:
     """
     Service to orchestrate the recommendation generation flow.
     
-    Runs on a schedule (every 2 hours) to:
+    Runs on a fixed schedule (7:30 AM & 12:00 PM PST daily) to:
     1. Fetch data from all sources for watchlist stocks
     2. Generate recommendations using ML engine
     3. Persist to database with full details
@@ -1200,7 +1200,8 @@ class RecommendationFlowService:
     """
     
     # Schedule interval: 2 hours in seconds
-    SCHEDULE_INTERVAL_SECONDS = 2 * 60 * 60  # 7200 seconds
+    # Fixed schedule times in PST (hour, minute)
+    SCHEDULED_RUN_TIMES = [(7, 30), (12, 0)]  # 7:30 AM PST and 12:00 PM PST
     
     def __init__(
         self,
@@ -1503,121 +1504,96 @@ class RecommendationFlowService:
             
             return deleted_count
     
-    def _is_within_trading_hours(self) -> bool:
+    def _get_next_scheduled_run(self) -> tuple:
         """
-        Check if current time is within trading hours (6 AM - 1 PM PST).
+        Calculate the next scheduled run time.
         
-        Can be disabled by setting ENABLE_TRADING_HOURS_CHECK=false environment variable
-        to allow the service to run 24/7.
+        The service runs at fixed times: 7:30 AM PST and 12:00 PM PST daily.
         
         Returns:
-            True if within trading hours (or if check is disabled), False otherwise.
+            Tuple of (seconds_until_next_run, next_run_time_str, should_run_now)
+            - seconds_until_next_run: Number of seconds until the next scheduled run
+            - next_run_time_str: String representation of next run time in PST
+            - should_run_now: True if we're within 1 minute of a scheduled time
         """
-        # Check if trading hours check is disabled
-        enable_check = os.getenv('ENABLE_TRADING_HOURS_CHECK', 'true').lower()
-        if enable_check == 'false':
-            logger.info("Trading hours check is DISABLED - running 24/7")
-            return True
-        
         from datetime import timezone, timedelta
         
         # PST is UTC-8, PDT is UTC-7. For simplicity, we'll use PST (UTC-8)
         pst = timezone(timedelta(hours=-8))
         now_pst = datetime.now(pst)
         
-        hour = now_pst.hour
-        is_within = 6 <= hour < 13  # 6 AM to 1 PM (13:00)
+        logger.info(f"Current PST time: {now_pst.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        logger.info(f"Current PST time: {now_pst.strftime('%Y-%m-%d %H:%M:%S')} - "
-                   f"Trading hours (6 AM - 1 PM): {'YES' if is_within else 'NO'}")
+        # Find the next scheduled run time
+        candidates = []
         
-        return is_within
-    
-    def _get_seconds_until_trading_hours(self) -> int:
-        """
-        Calculate seconds until next trading window starts (6 AM PST).
+        for hour, minute in self.SCHEDULED_RUN_TIMES:
+            # Check today's scheduled time
+            scheduled_today = now_pst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            time_diff = (scheduled_today - now_pst).total_seconds()
+            
+            if time_diff > -60:  # Within 1 minute past or in the future
+                candidates.append((time_diff, scheduled_today))
+            
+            # Also add tomorrow's time as a candidate
+            scheduled_tomorrow = scheduled_today + timedelta(days=1)
+            time_diff_tomorrow = (scheduled_tomorrow - now_pst).total_seconds()
+            candidates.append((time_diff_tomorrow, scheduled_tomorrow))
         
-        Returns:
-            Number of seconds until 6 AM PST.
-        """
-        from datetime import timezone, timedelta
+        # Sort by time difference and get the nearest future (or current) run
+        candidates.sort(key=lambda x: x[0])
         
-        pst = timezone(timedelta(hours=-8))
-        now_pst = datetime.now(pst)
+        # Find first candidate that's not too far in the past
+        for time_diff, scheduled_time in candidates:
+            if time_diff >= -60:  # Allow up to 1 minute past
+                should_run_now = -60 <= time_diff <= 60  # Within 1 minute window
+                seconds_until = max(0, int(time_diff))
+                time_str = scheduled_time.strftime('%Y-%m-%d %H:%M PST')
+                return (seconds_until, time_str, should_run_now)
         
-        # Calculate next 6 AM PST
-        if now_pst.hour >= 13:  # After 1 PM, next window is tomorrow 6 AM
-            next_start = now_pst.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        elif now_pst.hour < 6:  # Before 6 AM, next window is today 6 AM
-            next_start = now_pst.replace(hour=6, minute=0, second=0, microsecond=0)
-        else:  # During trading hours - shouldn't be called
-            return 0
-        
-        seconds_until = (next_start - now_pst).total_seconds()
-        return int(seconds_until)
+        # Fallback (shouldn't happen)
+        return (0, now_pst.strftime('%Y-%m-%d %H:%M PST'), True)
     
     async def start_scheduled(self):
         """
         Start the scheduled recommendation flow.
         
-        Runs every 2 hours, but ONLY during trading hours (6 AM - 1 PM PST).
-        Outside of trading hours, the service waits until the next trading window.
+        Runs at fixed times daily: 7:30 AM PST and 12:00 PM PST.
         """
         self._running = True
-        logger.info(f"Starting scheduled recommendation flow "
-                   f"(interval: {self.SCHEDULE_INTERVAL_SECONDS}s / "
-                   f"{self.SCHEDULE_INTERVAL_SECONDS / 3600:.1f} hours)")
-        logger.info("Trading hours: 6 AM - 1 PM PST (Monday-Sunday)")
+        schedule_times_str = ", ".join([f"{h}:{m:02d} AM PST" if h < 12 else f"{h}:00 PM PST" 
+                                        for h, m in self.SCHEDULED_RUN_TIMES])
+        logger.info(f"Starting scheduled recommendation flow")
+        logger.info(f"Fixed schedule: {schedule_times_str} (daily)")
         
         while self._running:
             try:
-                # Check if within trading hours
-                if self._is_within_trading_hours():
-                    # Run the flow
+                # Get next scheduled run time
+                seconds_until, next_run_str, should_run_now = self._get_next_scheduled_run()
+                
+                if should_run_now:
+                    # It's time to run
+                    logger.info(f"Scheduled run time reached: {next_run_str}")
                     await self.run_once()
                     
-                    # Wait for next interval using wall-clock time (handles system sleep/suspend)
-                    wait_seconds = self.SCHEDULE_INTERVAL_SECONDS
-                    heartbeat_interval = 600  # Log heartbeat every 10 minutes
-                    
-                    # Calculate target time using wall clock
-                    start_time = time.time()
-                    target_time = start_time + wait_seconds
-                    
-                    logger.info(f"Next run in {wait_seconds / 3600:.1f} hours. Sleeping until next cycle...")
-                    
-                    while time.time() < target_time and self._running:
-                        # Calculate remaining time based on wall clock
-                        remaining_seconds = target_time - time.time()
-                        if remaining_seconds <= 0:
-                            break
-                        
-                        # Sleep for heartbeat interval or remaining time, whichever is smaller
-                        sleep_chunk = min(heartbeat_interval, remaining_seconds)
-                        await asyncio.sleep(sleep_chunk)
-                        
-                        # Log heartbeat with wall-clock based timing
-                        remaining_seconds = target_time - time.time()
-                        if remaining_seconds > 0 and self._running:
-                            elapsed_min = (time.time() - start_time) / 60
-                            remaining_min = remaining_seconds / 60
-                            logger.info(f"Heartbeat: {elapsed_min:.0f} min elapsed, {remaining_min:.0f} min remaining until next run")
-                    
-                    logger.info("Sleep completed, starting next recommendation cycle...")
+                    # After running, wait a bit to avoid re-triggering within the same minute
+                    await asyncio.sleep(90)
                 else:
-                    # Outside trading hours - wait until next trading window
-                    wait_seconds = self._get_seconds_until_trading_hours()
-                    wait_hours = wait_seconds / 3600
+                    # Wait until the next scheduled time
+                    wait_hours = seconds_until / 3600
+                    wait_minutes = seconds_until / 60
                     
-                    logger.info(f"Outside trading hours. Waiting {wait_hours:.1f} hours until next trading window (6 AM PST)...")
+                    if wait_hours >= 1:
+                        logger.info(f"Next scheduled run: {next_run_str} ({wait_hours:.1f} hours from now)")
+                    else:
+                        logger.info(f"Next scheduled run: {next_run_str} ({wait_minutes:.0f} minutes from now)")
                     
-                    # Sleep until trading hours using wall-clock time (handles system sleep/suspend)
+                    # Sleep until next scheduled time using wall-clock time
                     start_time = time.time()
-                    target_time = start_time + wait_seconds
-                    heartbeat_interval = 1800  # Log every 30 minutes during off-hours
+                    target_time = start_time + seconds_until
+                    heartbeat_interval = 1800  # Log every 30 minutes
                     
                     while time.time() < target_time and self._running:
-                        # Calculate remaining time based on wall clock
                         remaining_seconds = target_time - time.time()
                         if remaining_seconds <= 0:
                             break
@@ -1625,13 +1601,15 @@ class RecommendationFlowService:
                         sleep_chunk = min(heartbeat_interval, remaining_seconds)
                         await asyncio.sleep(sleep_chunk)
                         
-                        # Log heartbeat with wall-clock based timing
+                        # Log heartbeat
                         remaining_seconds = target_time - time.time()
-                        if remaining_seconds > 0 and self._running:
+                        if remaining_seconds > 60 and self._running:
                             remaining_hours = remaining_seconds / 3600
-                            logger.info(f"Off-hours heartbeat: {remaining_hours:.1f} hours until trading window opens")
-                    
-                    logger.info("Trading hours starting, beginning recommendation cycle...")
+                            remaining_minutes = remaining_seconds / 60
+                            if remaining_hours >= 1:
+                                logger.info(f"Heartbeat: {remaining_hours:.1f} hours until next scheduled run ({next_run_str})")
+                            else:
+                                logger.info(f"Heartbeat: {remaining_minutes:.0f} minutes until next scheduled run ({next_run_str})")
                 
             except asyncio.CancelledError:
                 logger.info("Scheduled flow cancelled")
@@ -1723,7 +1701,7 @@ async def main(run_once: bool = False):
     - CLICKHOUSE_HOST: ClickHouse server for news features
     - REDIS_URL: Redis for caching
     - ENABLE_TRADING_HOURS_CHECK: Set to 'false' to run 24/7 (default: 'true')
-    - SCHEDULE_INTERVAL_SECONDS: Interval between runs (default: 7200 = 2 hours)
+    - SCHEDULED_RUN_TIMES: Fixed times for daily runs (default: 7:30 AM and 12:00 PM PST)
     
     Args:
         run_once: If True, run once and exit. If False, run on schedule.
