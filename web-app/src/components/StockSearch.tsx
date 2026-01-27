@@ -195,35 +195,37 @@ export default function StockSearch({ userId, watchlist, onWatchlistUpdate }: St
             <p className="text-sm text-gray-400 mt-1">Search above to add stocks you want to track</p>
           </div>
         ) : (
-          <div className="grid gap-3">
-            {watchlist.map((stock) => (
-              <div
-                key={stock.symbol}
-                className="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-xl hover:shadow-sm transition-shadow"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center text-white font-bold">
-                    {stock.symbol.slice(0, 2)}
+          <div className="max-h-[400px] overflow-y-auto border border-gray-200 rounded-xl">
+            <div className="grid gap-3 p-3">
+              {watchlist.map((stock) => (
+                <div
+                  key={stock.symbol}
+                  className="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-xl hover:shadow-sm transition-shadow"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center text-white font-bold">
+                      {stock.symbol.slice(0, 2)}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900">{stock.symbol}</div>
+                      <div className="text-sm text-gray-500">{stock.company_name}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="font-semibold text-gray-900">{stock.symbol}</div>
-                    <div className="text-sm text-gray-500">{stock.company_name}</div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">{stock.exchange}</span>
+                    <button
+                      onClick={() => handleRemoveStock(stock.symbol)}
+                      className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Remove from watchlist"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">{stock.exchange}</span>
-                  <button
-                    onClick={() => handleRemoveStock(stock.symbol)}
-                    className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                    title="Remove from watchlist"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
 
