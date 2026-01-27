@@ -6,8 +6,10 @@
  * - Navigation links to main sections
  * - User profile picture and info
  * - Logout button
+ * - Visual indicator on Connectors tab when errors are detected
  */
 
+import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
@@ -16,9 +18,20 @@ interface NavItem {
   path: string
 }
 
+interface ConnectorSummary {
+  connected: number
+  disconnected: number
+  error: number
+  disabled: number
+  unknown: number
+  total: number
+}
+
 const navItems: NavItem[] = [
   { label: 'Dashboard', path: '/dashboard' },
   { label: 'Recommendations', path: '/recommendations' },
+  { label: 'Jim Cramer Advice', path: '/jim-cramer' },
+  { label: 'Big Cap Losers', path: '/big-cap-losers' },
   { label: 'Connectors', path: '/connectors' },
 ]
 
@@ -26,6 +39,30 @@ export default function Header() {
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout } = useAuth()
+  const [connectorErrors, setConnectorErrors] = useState(0)
+
+  // Fetch connector health status to show indicator on Connectors tab
+  useEffect(() => {
+    const fetchConnectorStatus = async () => {
+      try {
+        const response = await fetch('/api/v1/connectors/summary')
+        if (response.ok) {
+          const data: ConnectorSummary = await response.json()
+          // Count errors and disconnected as issues
+          setConnectorErrors(data.error + data.disconnected)
+        }
+      } catch (error) {
+        console.error('Failed to fetch connector status:', error)
+      }
+    }
+
+    // Fetch immediately
+    fetchConnectorStatus()
+
+    // Poll every 5 minutes to keep status updated
+    const interval = setInterval(fetchConnectorStatus, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   const handleLogout = () => {
     logout()
@@ -61,13 +98,22 @@ export default function Header() {
                 <button
                   key={item.path}
                   onClick={() => navigate(item.path)}
-                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 ${
                     isActive(item.path)
                       ? 'bg-blue-50 text-blue-700'
                       : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
                   }`}
                 >
                   {item.label}
+                  {/* Show error indicator on Connectors tab when there are issues */}
+                  {item.path === '/connectors' && connectorErrors > 0 && (
+                    <span className="relative flex items-center" title={`${connectorErrors} connector${connectorErrors > 1 ? 's' : ''} with issues`}>
+                      <svg className="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                    </span>
+                  )}
                 </button>
               ))}
             </nav>
@@ -101,13 +147,22 @@ export default function Header() {
             <button
               key={item.path}
               onClick={() => navigate(item.path)}
-              className={`px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap transition-colors ${
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap transition-colors flex items-center gap-1 ${
                 isActive(item.path)
                   ? 'bg-blue-50 text-blue-700'
                   : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
               }`}
             >
               {item.label}
+              {/* Show error indicator on Connectors tab when there are issues */}
+              {item.path === '/connectors' && connectorErrors > 0 && (
+                <span className="relative flex items-center">
+                  <svg className="w-3.5 h-3.5 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
+                </span>
+              )}
             </button>
           ))}
         </nav>

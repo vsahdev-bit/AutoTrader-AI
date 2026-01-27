@@ -2,8 +2,8 @@
 RSS Feed Connector
 ==================
 
-Fetches news from financial RSS feeds including Reuters, Yahoo Finance,
-CNBC, and other major financial news sources.
+Fetches news from financial RSS feeds including CNBC, MarketWatch, 
+Seeking Alpha, and other major financial news sources.
 
 RSS feeds are free, reliable, and don't require API keys, making them
 excellent for supplementing paid API sources.
@@ -13,14 +13,29 @@ Features:
 - Real-time updates from major sources
 - Good for breaking news
 - Reliable and stable
+- Category-based filtering (earnings, finance, economy, etc.)
 
 Supported Feeds:
-- Reuters Business
-- Yahoo Finance
-- CNBC
-- MarketWatch
-- Seeking Alpha
-- Bloomberg (limited)
+- CNBC (9 feeds: Top News, Finance, Earnings, Investing, Stock Blog, 
+        Economy, Market Insider, Pro, World Markets)
+- MarketWatch (Top Stories, Market Pulse)
+- Seeking Alpha (Market Currents, Wall Street Breakfast)
+- Investing.com (Stock News, Economy)
+- Motley Fool
+- Business Insider Markets
+
+Usage:
+    # All feeds
+    connector = RSSFeedConnector()
+    
+    # CNBC feeds only
+    connector = RSSFeedConnector.cnbc_only()
+    
+    # Earnings-focused feeds
+    connector = RSSFeedConnector.by_category("earnings")
+    
+    # Specific feeds
+    connector = RSSFeedConnector(enabled_feeds=["cnbc_earnings", "cnbc_finance"])
 """
 
 from datetime import datetime, timedelta
@@ -40,53 +55,150 @@ logger = logging.getLogger(__name__)
 
 # RSS Feed definitions with their URLs and parsing info
 RSS_FEEDS = {
+    # =========================================================================
+    # CNBC Feeds - Comprehensive financial news coverage
+    # Source: https://www.cnbc.com/rss-feeds/
+    # =========================================================================
+    
+    # CNBC Top News - Breaking financial news and headlines
+    "cnbc_top_news": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Top News",
+        "category": "general",
+    },
+    # CNBC Finance - General finance news
+    "cnbc_finance": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Finance",
+        "category": "finance",
+    },
+    # CNBC Earnings - Company earnings reports and analysis
+    # Critical for stock recommendations during earnings season
+    "cnbc_earnings": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Earnings",
+        "category": "earnings",
+    },
+    # CNBC Investing - Investment strategies and market analysis
+    "cnbc_investing": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Investing",
+        "category": "investing",
+    },
+    # CNBC Stock Blog - Stock-specific news and analysis
+    "cnbc_stock_blog": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Stock Blog",
+        "category": "stocks",
+    },
+    # CNBC Economy - Economic indicators and policy news
+    "cnbc_economy": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Economy",
+        "category": "economy",
+    },
+    # CNBC Market Insider - Market movements and trends
+    "cnbc_market_insider": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20409666",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Market Insider",
+        "category": "markets",
+    },
+    # CNBC Pro - CNBC Pro analysis and picks (publicly available items)
+    "cnbc_pro": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=101147702",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC Pro",
+        "category": "analysis",
+    },
+    # CNBC World Markets - International market news
+    "cnbc_world_markets": {
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135",
+        "source": NewsSource.RSS_YAHOO,
+        "source_name": "CNBC World Markets",
+        "category": "international",
+    },
+    
+    # =========================================================================
+    # Seeking Alpha Feeds
+    # =========================================================================
+    
     # Seeking Alpha - Market Currents (reliable, good financial news)
     "seeking_alpha_market": {
         "url": "https://seekingalpha.com/market_currents.xml",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Seeking Alpha",
+        "category": "markets",
     },
     # Seeking Alpha - Wall Street Breakfast
     "seeking_alpha_wsb": {
         "url": "https://seekingalpha.com/tag/wall-st-breakfast.xml",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Seeking Alpha WSB",
+        "category": "markets",
     },
+    
+    # =========================================================================
+    # MarketWatch Feeds (Dow Jones)
+    # =========================================================================
+    
     # MarketWatch Top Stories (using Dow Jones CDN)
     "marketwatch_top": {
         "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "MarketWatch",
+        "category": "general",
     },
     # MarketWatch Market Pulse (using Dow Jones CDN)
     "marketwatch_stocks": {
         "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "MarketWatch",
+        "category": "markets",
     },
+    
+    # =========================================================================
+    # Investing.com Feeds
+    # =========================================================================
+    
     # Investing.com - Stock News
     "investing_stock_news": {
         "url": "https://www.investing.com/rss/news_301.rss",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Investing.com Stocks",
+        "category": "stocks",
     },
     # Investing.com - Economy
     "investing_economy": {
         "url": "https://www.investing.com/rss/news_14.rss",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Investing.com Economy",
+        "category": "economy",
     },
+    
+    # =========================================================================
+    # Other Financial News Feeds
+    # =========================================================================
+    
     # The Motley Fool
     "motley_fool": {
         "url": "https://www.fool.com/feeds/index.aspx",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Motley Fool",
+        "category": "investing",
     },
     # Business Insider Markets
     "business_insider": {
         "url": "https://markets.businessinsider.com/rss/news",
         "source": NewsSource.RSS_YAHOO,
         "source_name": "Business Insider Markets",
+        "category": "markets",
     },
 }
 
@@ -137,7 +249,111 @@ class RSSFeedConnector(BaseNewsConnector):
         else:
             self.feeds = RSS_FEEDS.copy()
         
-        logger.info(f"RSS connector initialized with {len(self.feeds)} feeds")
+        logger.info(f"RSS connector initialized with {len(self.feeds)} feeds: {list(self.feeds.keys())}")
+    
+    @classmethod
+    def cnbc_only(cls, timeout: int = 30) -> "RSSFeedConnector":
+        """
+        Create connector with only CNBC feeds enabled.
+        
+        CNBC provides comprehensive financial coverage including:
+        - Top News: Breaking financial news
+        - Finance: General finance news
+        - Earnings: Company earnings reports (critical for recommendations)
+        - Investing: Investment strategies
+        - Stock Blog: Stock-specific analysis
+        - Economy: Economic indicators
+        - Market Insider: Market movements
+        - Pro: CNBC Pro analysis
+        - World Markets: International news
+        
+        Returns:
+            RSSFeedConnector configured for CNBC feeds only
+        """
+        cnbc_feeds = [k for k in RSS_FEEDS.keys() if k.startswith("cnbc_")]
+        return cls(enabled_feeds=cnbc_feeds, timeout=timeout)
+    
+    @classmethod
+    def by_category(cls, category: str, timeout: int = 30) -> "RSSFeedConnector":
+        """
+        Create connector with feeds filtered by category.
+        
+        Available categories:
+        - "general": General news (CNBC Top News, MarketWatch Top)
+        - "finance": Finance news
+        - "earnings": Earnings reports and analysis
+        - "investing": Investment strategies
+        - "stocks": Stock-specific news
+        - "economy": Economic news
+        - "markets": Market movements and trends
+        - "analysis": Professional analysis
+        - "international": World markets
+        
+        Args:
+            category: Category to filter by
+            timeout: HTTP request timeout
+            
+        Returns:
+            RSSFeedConnector configured for specified category
+        """
+        category_feeds = [
+            k for k, v in RSS_FEEDS.items() 
+            if v.get("category") == category
+        ]
+        if not category_feeds:
+            logger.warning(f"No feeds found for category '{category}', using all feeds")
+            return cls(timeout=timeout)
+        return cls(enabled_feeds=category_feeds, timeout=timeout)
+    
+    @classmethod
+    def by_source(cls, source_prefix: str, timeout: int = 30) -> "RSSFeedConnector":
+        """
+        Create connector with feeds filtered by source.
+        
+        Available source prefixes:
+        - "cnbc": CNBC feeds
+        - "seeking_alpha": Seeking Alpha feeds
+        - "marketwatch": MarketWatch feeds
+        - "investing": Investing.com feeds
+        - "motley": Motley Fool
+        - "business_insider": Business Insider
+        
+        Args:
+            source_prefix: Prefix to filter feed keys by
+            timeout: HTTP request timeout
+            
+        Returns:
+            RSSFeedConnector configured for specified source
+        """
+        source_feeds = [k for k in RSS_FEEDS.keys() if k.startswith(source_prefix)]
+        if not source_feeds:
+            logger.warning(f"No feeds found for source '{source_prefix}', using all feeds")
+            return cls(timeout=timeout)
+        return cls(enabled_feeds=source_feeds, timeout=timeout)
+    
+    @staticmethod
+    def list_available_feeds() -> Dict[str, Dict[str, Any]]:
+        """
+        List all available RSS feeds with their configuration.
+        
+        Returns:
+            Dictionary of feed configurations
+        """
+        return RSS_FEEDS.copy()
+    
+    @staticmethod
+    def list_categories() -> List[str]:
+        """
+        List all available feed categories.
+        
+        Returns:
+            List of unique category names
+        """
+        categories = set()
+        for feed in RSS_FEEDS.values():
+            if "category" in feed:
+                categories.add(feed["category"])
+        return sorted(list(categories))
     
     async def fetch_news(
         self,

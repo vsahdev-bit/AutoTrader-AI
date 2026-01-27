@@ -23,6 +23,10 @@ interface RegimeDisplayProps {
   regime: RegimeResponse | null
   isLoading?: boolean
   compact?: boolean
+  /** Symbol to display in modal header */
+  symbol?: string
+  /** If provided, renders as a modal dialog with close button */
+  onClose?: () => void
 }
 
 /**
@@ -224,24 +228,247 @@ function StopLossCard({ stopLoss }: { stopLoss: StopLossInfo }) {
 /**
  * Main RegimeDisplay Component
  */
-export default function RegimeDisplay({ regime, isLoading, compact = false }: RegimeDisplayProps) {
+export default function RegimeDisplay({ regime, isLoading, compact = false, symbol, onClose }: RegimeDisplayProps) {
   const [expanded, setExpanded] = useState(!compact)
   
-  if (isLoading) {
-    return (
-      <div className="animate-pulse bg-gray-100 rounded-lg p-4">
-        <div className="h-4 bg-gray-200 rounded w-1/3 mb-2"></div>
-        <div className="h-3 bg-gray-200 rounded w-2/3"></div>
-      </div>
-    )
+  // Loading state
+  const loadingContent = (
+    <div className="animate-pulse bg-gray-100 rounded-lg p-4">
+      <div className="h-4 bg-gray-200 rounded w-1/3 mb-2"></div>
+      <div className="h-3 bg-gray-200 rounded w-2/3"></div>
+    </div>
+  )
+  
+  if (isLoading && !onClose) {
+    return loadingContent
   }
   
-  if (!regime) {
+  if (!regime && !onClose) {
     return null
   }
   
-  const { regime: regimeInfo, position_sizing, stop_loss, signal_weights } = regime
-  const isHighRisk = regimeInfo.risk_level === 'high'
+  const regimeInfo = regime?.regime
+  const position_sizing = regime?.position_sizing
+  const stop_loss = regime?.stop_loss
+  const signal_weights = regime?.signal_weights
+  const isHighRisk = regimeInfo?.risk_level === 'high'
+  
+  // Render the regime content (shared between modal and inline views)
+  const renderRegimeContent = () => {
+    if (isLoading) return loadingContent
+    if (!regime || !regimeInfo || !signal_weights) return null
+    
+    return (
+      <>
+        {/* Regime Dimensions */}
+        <div className="p-4 border-b border-gray-200">
+          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+            Market Conditions
+          </h4>
+          <div className="grid grid-cols-2 gap-3">
+            {/* Volatility */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Volatility</span>
+              <span className={`px-2 py-1 rounded text-xs font-medium ${getVolatilityColor(regimeInfo.volatility)}`}>
+                {regimeInfo.volatility.toUpperCase()}
+              </span>
+            </div>
+            
+            {/* Trend */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Trend</span>
+              <span className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1 ${getTrendColor(regimeInfo.trend)}`}>
+                {getTrendIcon(regimeInfo.trend)} {formatTrendLabel(regimeInfo.trend)}
+              </span>
+            </div>
+            
+            {/* Liquidity */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Liquidity</span>
+              <span className={`px-2 py-1 rounded text-xs font-medium ${getLiquidityColor(regimeInfo.liquidity)}`}>
+                {regimeInfo.liquidity.toUpperCase()}
+              </span>
+            </div>
+            
+            {/* Information */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">News Flow</span>
+              <span className={`px-2 py-1 rounded text-xs font-medium ${getInfoColor(regimeInfo.information)}`}>
+                {formatInfoLabel(regimeInfo.information)}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        {/* Signal Weights */}
+        <div className="p-4 border-b border-gray-200">
+          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+            Signal Weights (Regime-Adjusted)
+          </h4>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 w-28">News Sentiment</span>
+              <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-blue-500 rounded-full" 
+                  style={{ width: `${signal_weights.news_sentiment * 100}%` }}
+                />
+              </div>
+              <span className="text-xs font-medium text-gray-700 w-12 text-right">
+                {(signal_weights.news_sentiment * 100).toFixed(0)}%
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 w-28">News Momentum</span>
+              <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-indigo-500 rounded-full" 
+                  style={{ width: `${signal_weights.news_momentum * 100}%` }}
+                />
+              </div>
+              <span className="text-xs font-medium text-gray-700 w-12 text-right">
+                {(signal_weights.news_momentum * 100).toFixed(0)}%
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 w-28">Tech Trend</span>
+              <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-cyan-500 rounded-full" 
+                  style={{ width: `${signal_weights.technical_trend * 100}%` }}
+                />
+              </div>
+              <span className="text-xs font-medium text-gray-700 w-12 text-right">
+                {(signal_weights.technical_trend * 100).toFixed(0)}%
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 w-28">Tech Momentum</span>
+              <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-teal-500 rounded-full" 
+                  style={{ width: `${signal_weights.technical_momentum * 100}%` }}
+                />
+              </div>
+              <span className="text-xs font-medium text-gray-700 w-12 text-right">
+                {(signal_weights.technical_momentum * 100).toFixed(0)}%
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-xs text-gray-500">Confidence Multiplier:</span>
+            <span className={`text-sm font-semibold ${
+              signal_weights.confidence_multiplier < 0.5 ? 'text-red-600' :
+              signal_weights.confidence_multiplier < 0.8 ? 'text-orange-600' :
+              'text-green-600'
+            }`}>
+              {(signal_weights.confidence_multiplier * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+        
+        {/* Position Sizing & Stop Loss */}
+        {(position_sizing || stop_loss) && (
+          <div className="p-4">
+            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+              Risk Management
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {position_sizing && <PositionSizingCard sizing={position_sizing} />}
+              {stop_loss && <StopLossCard stopLoss={stop_loss} />}
+            </div>
+          </div>
+        )}
+      </>
+    )
+  }
+  
+  // Modal mode - render as a dialog overlay
+  if (onClose) {
+    return (
+      <div className="fixed inset-0 z-50 overflow-y-auto">
+        {/* Backdrop */}
+        <div 
+          className="fixed inset-0 bg-black/50 transition-opacity"
+          onClick={onClose}
+        />
+        
+        {/* Modal */}
+        <div className="flex min-h-full items-center justify-center p-4">
+          <div className={`relative w-full max-w-2xl rounded-xl shadow-2xl ${
+            isHighRisk ? 'bg-red-50' : 'bg-white'
+          }`}>
+            {/* Modal Header */}
+            <div className={`flex items-center justify-between p-4 border-b ${
+              isHighRisk ? 'border-red-200' : 'border-gray-200'
+            }`}>
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl ${
+                  isHighRisk ? 'bg-red-100' : 'bg-green-100'
+                }`}>
+                  {isHighRisk ? '⚠️' : '📊'}
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-900">
+                    {symbol ? `${symbol} - ` : ''}Market Regime
+                  </h3>
+                  {regimeInfo && (
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="font-medium text-gray-700">{regimeInfo.label}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        isHighRisk ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'
+                      }`}>
+                        {isHighRisk ? 'High Risk' : 'Normal Risk'}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        Score: {(regimeInfo.risk_score * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Warnings */}
+            {regimeInfo && regimeInfo.warnings.length > 0 && (
+              <div className={`px-4 py-3 border-b ${isHighRisk ? 'bg-red-100 border-red-200' : 'bg-yellow-50 border-yellow-200'}`}>
+                {regimeInfo.warnings.map((warning, idx) => (
+                  <p key={idx} className="text-sm text-red-700 flex items-center gap-2">
+                    <span>⚠️</span> {warning}
+                  </p>
+                ))}
+              </div>
+            )}
+            
+            {/* Modal Content */}
+            <div className="max-h-[70vh] overflow-y-auto">
+              {renderRegimeContent()}
+            </div>
+            
+            {/* Modal Footer */}
+            <div className={`flex justify-end p-4 border-t ${
+              isHighRisk ? 'border-red-200' : 'border-gray-200'
+            }`}>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
   
   // Compact view for inline display
   if (compact && !expanded) {
@@ -258,9 +485,9 @@ export default function RegimeDisplay({ regime, isLoading, compact = false }: Re
               {isHighRisk ? '⚠️' : '📊'}
             </span>
             <div>
-              <span className="font-medium text-gray-900">{regimeInfo.label}</span>
+              <span className="font-medium text-gray-900">{regimeInfo?.label}</span>
               <span className="text-xs text-gray-500 ml-2">
-                Risk: {(regimeInfo.risk_score * 100).toFixed(0)}%
+                Risk: {regimeInfo ? (regimeInfo.risk_score * 100).toFixed(0) : 0}%
               </span>
             </div>
           </div>
@@ -275,14 +502,16 @@ export default function RegimeDisplay({ regime, isLoading, compact = false }: Re
             </svg>
           </div>
         </div>
-        {regimeInfo.warnings.length > 0 && (
+        {regimeInfo && regimeInfo.warnings.length > 0 && (
           <p className="text-xs text-red-600 mt-1">⚠️ {regimeInfo.warnings[0]}</p>
         )}
       </div>
     )
   }
   
-  // Full expanded view
+  // Full expanded view (inline, not modal) - only render if we have regime data
+  if (!regimeInfo || !signal_weights) return null
+  
   return (
     <div className={`rounded-xl border ${
       isHighRisk ? 'bg-red-50/50 border-red-200' : 'bg-white border-gray-200'
@@ -334,125 +563,8 @@ export default function RegimeDisplay({ regime, isLoading, compact = false }: Re
         )}
       </div>
       
-      {/* Regime Dimensions */}
-      <div className="p-4 border-b border-gray-200">
-        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-          Market Conditions
-        </h4>
-        <div className="grid grid-cols-2 gap-3">
-          {/* Volatility */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-600">Volatility</span>
-            <span className={`px-2 py-1 rounded text-xs font-medium ${getVolatilityColor(regimeInfo.volatility)}`}>
-              {regimeInfo.volatility.toUpperCase()}
-            </span>
-          </div>
-          
-          {/* Trend */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-600">Trend</span>
-            <span className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1 ${getTrendColor(regimeInfo.trend)}`}>
-              {getTrendIcon(regimeInfo.trend)} {formatTrendLabel(regimeInfo.trend)}
-            </span>
-          </div>
-          
-          {/* Liquidity */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-600">Liquidity</span>
-            <span className={`px-2 py-1 rounded text-xs font-medium ${getLiquidityColor(regimeInfo.liquidity)}`}>
-              {regimeInfo.liquidity.toUpperCase()}
-            </span>
-          </div>
-          
-          {/* Information */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-600">News Flow</span>
-            <span className={`px-2 py-1 rounded text-xs font-medium ${getInfoColor(regimeInfo.information)}`}>
-              {formatInfoLabel(regimeInfo.information)}
-            </span>
-          </div>
-        </div>
-      </div>
-      
-      {/* Signal Weights */}
-      <div className="p-4 border-b border-gray-200">
-        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-          Signal Weights (Regime-Adjusted)
-        </h4>
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 w-28">News Sentiment</span>
-            <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-blue-500 rounded-full" 
-                style={{ width: `${signal_weights.news_sentiment * 100}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium text-gray-700 w-12 text-right">
-              {(signal_weights.news_sentiment * 100).toFixed(0)}%
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 w-28">News Momentum</span>
-            <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-indigo-500 rounded-full" 
-                style={{ width: `${signal_weights.news_momentum * 100}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium text-gray-700 w-12 text-right">
-              {(signal_weights.news_momentum * 100).toFixed(0)}%
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 w-28">Tech Trend</span>
-            <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-cyan-500 rounded-full" 
-                style={{ width: `${signal_weights.technical_trend * 100}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium text-gray-700 w-12 text-right">
-              {(signal_weights.technical_trend * 100).toFixed(0)}%
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 w-28">Tech Momentum</span>
-            <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-teal-500 rounded-full" 
-                style={{ width: `${signal_weights.technical_momentum * 100}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium text-gray-700 w-12 text-right">
-              {(signal_weights.technical_momentum * 100).toFixed(0)}%
-            </span>
-          </div>
-        </div>
-        <div className="mt-3 flex items-center gap-2">
-          <span className="text-xs text-gray-500">Confidence Multiplier:</span>
-          <span className={`text-sm font-semibold ${
-            signal_weights.confidence_multiplier < 0.5 ? 'text-red-600' :
-            signal_weights.confidence_multiplier < 0.8 ? 'text-orange-600' :
-            'text-green-600'
-          }`}>
-            {(signal_weights.confidence_multiplier * 100).toFixed(0)}%
-          </span>
-        </div>
-      </div>
-      
-      {/* Position Sizing & Stop Loss */}
-      {(position_sizing || stop_loss) && (
-        <div className="p-4">
-          <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-            Risk Management
-          </h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {position_sizing && <PositionSizingCard sizing={position_sizing} />}
-            {stop_loss && <StopLossCard stopLoss={stop_loss} />}
-          </div>
-        </div>
-      )}
+      {/* Use shared content renderer for the rest */}
+      {renderRegimeContent()}
     </div>
   )
 }

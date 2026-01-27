@@ -8,6 +8,8 @@ import Home from './pages/Home'
 import Onboarding from './pages/Onboarding'
 import StockRecommendations from './pages/StockRecommendations'
 import Connectors from './pages/Connectors'
+import JimCramerAdvice from './pages/JimCramerAdvice'
+import BigCapLosers from './pages/BigCapLosers'
 // Public pages
 import Pricing from './pages/Pricing'
 import FAQ from './pages/FAQ'
@@ -81,6 +83,12 @@ function AppRoutes() {
         
         {/* Connectors - public route for viewing data connector status */}
         <Route path="/connectors" element={<Connectors />} />
+        
+        {/* Jim Cramer Advice - daily analysis of Cramer's stock picks */}
+        <Route path="/jim-cramer" element={<JimCramerAdvice />} />
+        
+        {/* Big Cap Losers - track large-cap stocks with significant drops */}
+        <Route path="/big-cap-losers" element={<BigCapLosers />} />
         
         {/* Onboarding route - protected, but accessible only if onboarding not complete */}
         <Route

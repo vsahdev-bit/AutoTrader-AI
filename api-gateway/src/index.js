@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import dotenv from 'dotenv';
+import http from 'http';
 import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } from 'plaid';
 import { 
   initializeVault, 
@@ -1638,6 +1639,832 @@ app.post('/api/v1/connectors/refresh', async (req, res) => {
   } catch (error) {
     console.error('Error triggering connector refresh:', error);
     res.status(500).json({ error: 'Failed to trigger connector refresh' });
+  }
+});
+
+// =============================================================================
+// Jim Cramer Advice API Endpoints
+// =============================================================================
+
+/**
+ * GET /api/jim-cramer/summary/latest
+ * Get the latest daily summary of Jim Cramer's advice
+ */
+app.get('/api/jim-cramer/summary/latest', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id,
+        summary_date,
+        market_sentiment,
+        market_sentiment_score,
+        summary_title,
+        summary_text,
+        key_points,
+        top_bullish_picks,
+        top_bearish_picks,
+        stocks_to_watch,
+        sectors_bullish,
+        sectors_bearish,
+        total_articles_analyzed,
+        total_stocks_mentioned,
+        generated_at
+      FROM jim_cramer_daily_summaries
+      ORDER BY summary_date DESC
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No summary found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching Jim Cramer summary:', error);
+    res.status(500).json({ error: 'Failed to fetch summary' });
+  }
+});
+
+/**
+ * GET /api/jim-cramer/mentions/today
+ * Get today's stock mentions from Jim Cramer articles
+ */
+app.get('/api/jim-cramer/mentions/today', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        m.symbol,
+        m.company_name,
+        m.sentiment,
+        m.sentiment_score,
+        m.recommendation,
+        m.reasoning,
+        m.quote,
+        a.title as article_title,
+        a.article_url,
+        a.published_at
+      FROM jim_cramer_stock_mentions m
+      JOIN jim_cramer_articles a ON m.article_id = a.id
+      WHERE a.published_at >= CURRENT_DATE
+      ORDER BY a.published_at DESC, m.sentiment_score DESC
+      LIMIT 50
+    `);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching Jim Cramer mentions:', error);
+    res.status(500).json({ error: 'Failed to fetch mentions' });
+  }
+});
+
+/**
+ * GET /api/jim-cramer/articles/recent
+ * Get recent Jim Cramer articles
+ */
+app.get('/api/jim-cramer/articles/recent', async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+  
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id,
+        title,
+        article_url,
+        source_name,
+        published_at,
+        description
+      FROM jim_cramer_articles
+      ORDER BY published_at DESC
+      LIMIT $1
+    `, [limit]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching Jim Cramer articles:', error);
+    res.status(500).json({ error: 'Failed to fetch articles' });
+  }
+});
+
+/**
+ * GET /api/jim-cramer/stock/:symbol
+ * Get all mentions for a specific stock
+ */
+app.get('/api/jim-cramer/stock/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  
+  try {
+    const result = await pool.query(`
+      SELECT 
+        m.symbol,
+        m.company_name,
+        m.sentiment,
+        m.sentiment_score,
+        m.recommendation,
+        m.reasoning,
+        m.quote,
+        a.title as article_title,
+        a.article_url,
+        a.published_at
+      FROM jim_cramer_stock_mentions m
+      JOIN jim_cramer_articles a ON m.article_id = a.id
+      WHERE m.symbol = $1
+      ORDER BY a.published_at DESC
+      LIMIT 20
+    `, [symbol]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching stock mentions:', error);
+    res.status(500).json({ error: 'Failed to fetch stock mentions' });
+  }
+});
+
+// ============================================================================
+// BIG CAP LOSERS ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/big-cap-losers/latest
+ * Get the latest big cap losers (stocks with market cap > $1B)
+ */
+app.get('/api/big-cap-losers/latest', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT ON (symbol)
+        id, symbol, company_name, current_price, price_change, percent_change,
+        market_cap, market_cap_formatted, volume, trading_date, crawled_at
+      FROM big_cap_losers
+      WHERE market_cap >= 1000000000
+      ORDER BY symbol, crawled_at DESC
+    `);
+    
+    // Sort by percent_change ascending (worst performers first)
+    const sorted = result.rows.sort((a, b) => a.percent_change - b.percent_change);
+    res.json(sorted);
+  } catch (error) {
+    console.error('Error fetching big cap losers:', error);
+    res.status(500).json({ error: 'Failed to fetch big cap losers' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/over-10
+ * Get big cap losers that have fallen more than 10%
+ */
+app.get('/api/big-cap-losers/over-10', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT ON (symbol)
+        id, symbol, company_name, current_price, price_change, percent_change,
+        market_cap, market_cap_formatted, volume, trading_date, crawled_at
+      FROM big_cap_losers
+      WHERE market_cap >= 1000000000
+        AND percent_change <= -10.0
+      ORDER BY symbol, crawled_at DESC
+    `);
+    
+    const sorted = result.rows.sort((a, b) => a.percent_change - b.percent_change);
+    res.json(sorted);
+  } catch (error) {
+    console.error('Error fetching big cap losers over 10%:', error);
+    res.status(500).json({ error: 'Failed to fetch big cap losers' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/today
+ * Get today's big cap losers
+ */
+app.get('/api/big-cap-losers/today', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, symbol, company_name, current_price, price_change, percent_change,
+        market_cap, market_cap_formatted, volume, trading_date, crawled_at
+      FROM big_cap_losers
+      WHERE trading_date = CURRENT_DATE
+        AND market_cap >= 1000000000
+      ORDER BY percent_change ASC
+    `);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching today\'s big cap losers:', error);
+    res.status(500).json({ error: 'Failed to fetch big cap losers' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/summary
+ * Get the daily summary of big cap losers
+ */
+app.get('/api/big-cap-losers/summary', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM big_cap_losers_daily_summary
+      ORDER BY summary_date DESC
+      LIMIT 1
+    `);
+    
+    if (result.rows.length === 0) {
+      return res.json(null);
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching big cap losers summary:', error);
+    res.status(500).json({ error: 'Failed to fetch summary' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/history/:symbol
+ * Get historical data for a specific symbol
+ */
+app.get('/api/big-cap-losers/history/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, symbol, company_name, current_price, price_change, percent_change,
+        market_cap, market_cap_formatted, volume, trading_date, crawled_at
+      FROM big_cap_losers
+      WHERE symbol = $1
+      ORDER BY crawled_at DESC
+      LIMIT 30
+    `, [symbol]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching symbol history:', error);
+    res.status(500).json({ error: 'Failed to fetch symbol history' });
+  }
+});
+
+// ============================================================================
+// CRAWLER SERVICE HEALTH CHECK ENDPOINTS
+// ============================================================================
+
+/**
+ * GET /api/v1/crawler-services/status
+ * Get status of all crawler services (Jim Cramer, Big Cap Losers)
+ */
+app.get('/api/v1/crawler-services/status', async (req, res) => {
+  try {
+    // Get Jim Cramer service status from crawl logs
+    const jimCramerResult = await pool.query(`
+      SELECT 
+        'jim_cramer' as service_name,
+        status,
+        articles_found,
+        articles_new,
+        started_at as last_run_at,
+        duration_seconds,
+        error_message
+      FROM jim_cramer_crawl_logs
+      ORDER BY crawl_date DESC, started_at DESC
+      LIMIT 1
+    `);
+    
+    // Get Big Cap Losers service status from crawl logs
+    const bigCapResult = await pool.query(`
+      SELECT 
+        'big_cap_losers' as service_name,
+        status,
+        total_losers_found,
+        big_cap_losers_found,
+        over_15_percent_found as over_threshold_found,
+        started_at as last_run_at,
+        duration_seconds,
+        error_message
+      FROM big_cap_losers_crawl_logs
+      ORDER BY crawl_timestamp DESC
+      LIMIT 1
+    `);
+    
+    // Get health check settings for these services
+    const settingsResult = await pool.query(`
+      SELECT setting_key, enabled, updated_at 
+      FROM health_check_settings
+      WHERE setting_key IN ('jim_cramer_service', 'big_cap_losers_service')
+    `);
+    
+    const settings = {};
+    settingsResult.rows.forEach(row => {
+      settings[row.setting_key] = { enabled: row.enabled, updatedAt: row.updated_at };
+    });
+    
+    const jimCramer = jimCramerResult.rows[0] || null;
+    const bigCapLosers = bigCapResult.rows[0] || null;
+    
+    res.json({
+      jimCramerService: {
+        status: jimCramer ? (jimCramer.status === 'success' ? 'connected' : 'error') : 'unknown',
+        lastRunAt: jimCramer?.last_run_at || null,
+        articlesFound: jimCramer?.articles_found || 0,
+        articlesNew: jimCramer?.articles_new || 0,
+        durationSeconds: jimCramer?.duration_seconds || null,
+        errorMessage: jimCramer?.error_message || null,
+        enabled: settings['jim_cramer_service']?.enabled ?? true
+      },
+      bigCapLosersService: {
+        status: bigCapLosers ? (bigCapLosers.status === 'success' ? 'connected' : 'error') : 'unknown',
+        lastRunAt: bigCapLosers?.last_run_at || null,
+        totalLosersFound: bigCapLosers?.total_losers_found || 0,
+        bigCapLosersFound: bigCapLosers?.big_cap_losers_found || 0,
+        overThresholdFound: bigCapLosers?.over_threshold_found || 0,
+        durationSeconds: bigCapLosers?.duration_seconds || null,
+        errorMessage: bigCapLosers?.error_message || null,
+        enabled: settings['big_cap_losers_service']?.enabled ?? true
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching crawler services status:', error);
+    res.status(500).json({ error: 'Failed to fetch crawler services status' });
+  }
+});
+
+/**
+ * PUT /api/v1/crawler-services/settings/:service
+ * Update health check enabled setting for a crawler service
+ */
+app.put('/api/v1/crawler-services/settings/:service', async (req, res) => {
+  const { service } = req.params;
+  const { enabled } = req.body;
+  
+  const validServices = ['jim_cramer_service', 'big_cap_losers_service'];
+  if (!validServices.includes(service)) {
+    return res.status(400).json({ error: 'Invalid service name' });
+  }
+  
+  try {
+    const result = await pool.query(`
+      INSERT INTO health_check_settings (setting_key, enabled, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (setting_key) DO UPDATE 
+      SET enabled = $2, updated_at = NOW()
+      RETURNING setting_key, enabled, updated_at
+    `, [service, enabled]);
+    
+    res.json({
+      success: true,
+      setting: {
+        key: result.rows[0].setting_key,
+        enabled: result.rows[0].enabled,
+        updatedAt: result.rows[0].updated_at
+      }
+    });
+  } catch (error) {
+    console.error('Error updating crawler service setting:', error);
+    res.status(500).json({ error: 'Failed to update crawler service setting' });
+  }
+});
+
+/**
+ * POST /api/v1/crawler-services/jim-cramer/run
+ * Trigger a manual run of the Jim Cramer service
+ */
+app.post('/api/v1/crawler-services/jim-cramer/run', async (req, res) => {
+  try {
+    // We'll use Docker exec to run the service
+    const { exec } = require('child_process');
+    
+    // Run the Jim Cramer service once
+    exec('docker exec autotrader-jim-cramer python service.py --once 2>&1 || echo "Service triggered"', 
+      { timeout: 5000 },
+      (error, stdout, stderr) => {
+        if (error && !stdout.includes('triggered')) {
+          console.log('Jim Cramer service trigger note:', error.message);
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Jim Cramer service run triggered. Check status in a few minutes.'
+    });
+  } catch (error) {
+    console.error('Error triggering Jim Cramer service:', error);
+    res.status(500).json({ error: 'Failed to trigger Jim Cramer service' });
+  }
+});
+
+/**
+ * POST /api/v1/crawler-services/big-cap-losers/run
+ * Trigger a manual run of the Big Cap Losers service
+ */
+app.post('/api/v1/crawler-services/big-cap-losers/run', async (req, res) => {
+  try {
+    // We'll use Docker exec to run the service
+    const { exec } = require('child_process');
+    
+    // Run the Big Cap Losers service once
+    exec('docker exec autotrader-big-cap-losers python service.py --once 2>&1 || echo "Service triggered"',
+      { timeout: 5000 },
+      (error, stdout, stderr) => {
+        if (error && !stdout.includes('triggered')) {
+          console.log('Big Cap Losers service trigger note:', error.message);
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Big Cap Losers service run triggered. Check status in a few minutes.'
+    });
+  } catch (error) {
+    console.error('Error triggering Big Cap Losers service:', error);
+    res.status(500).json({ error: 'Failed to trigger Big Cap Losers service' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/with-recommendations
+ * Get big cap losers with their AI recommendations
+ */
+app.get('/api/big-cap-losers/with-recommendations', async (req, res) => {
+  try {
+    // Only show stocks from the latest crawl batch (within 5 minutes of the most recent crawl)
+    const result = await pool.query(`
+      WITH latest_crawl AS (
+        SELECT MAX(crawled_at) as max_crawl_time
+        FROM big_cap_losers
+      )
+      SELECT DISTINCT ON (bcl.symbol)
+        bcl.id as loser_id,
+        bcl.symbol,
+        bcl.company_name,
+        bcl.current_price,
+        bcl.price_change,
+        bcl.percent_change,
+        bcl.market_cap,
+        bcl.market_cap_formatted,
+        bcl.volume,
+        bcl.trading_date,
+        bcl.crawled_at,
+        rec.id as recommendation_id,
+        rec.action,
+        rec.score,
+        rec.normalized_score,
+        rec.confidence,
+        rec.market_regime,
+        rec.regime_confidence,
+        rec.news_score,
+        rec.technical_score,
+        rec.explanation,
+        rec.generated_at as recommendation_generated_at
+      FROM big_cap_losers bcl
+      CROSS JOIN latest_crawl lc
+      LEFT JOIN LATERAL (
+        SELECT *
+        FROM big_cap_losers_recommendations r
+        WHERE r.symbol = bcl.symbol
+        ORDER BY r.generated_at DESC
+        LIMIT 1
+      ) rec ON true
+      WHERE bcl.market_cap >= 1000000000
+        AND bcl.crawled_at >= lc.max_crawl_time - INTERVAL '5 minutes'
+      ORDER BY bcl.symbol, bcl.crawled_at DESC
+    `);
+    
+    const sorted = result.rows.sort((a, b) => a.percent_change - b.percent_change);
+    res.json(sorted);
+  } catch (error) {
+    console.error('Error fetching big cap losers with recommendations:', error);
+    res.status(500).json({ error: 'Failed to fetch data' });
+  }
+});
+
+/**
+ * POST /api/big-cap-losers/generate-recommendations
+ * Generate AI recommendations for all current big cap losers
+ * Fetches from the existing stock_recommendations table if available
+ */
+app.post('/api/big-cap-losers/generate-recommendations', async (req, res) => {
+  
+  try {
+    // Get all current big cap losers
+    const losersResult = await pool.query(`
+      SELECT DISTINCT ON (symbol)
+        id, symbol, current_price, percent_change
+      FROM big_cap_losers
+      WHERE market_cap >= 1000000000
+      ORDER BY symbol, crawled_at DESC
+    `);
+    
+    const symbols = losersResult.rows.map(r => r.symbol);
+    
+    if (symbols.length === 0) {
+      return res.json({ success: true, message: 'No big cap losers to analyze', generated: 0 });
+    }
+    
+    console.log(`Looking for recommendations for ${symbols.length} big cap losers: ${symbols.join(', ')}`);
+    
+    // First, try to get existing recommendations from the main stock_recommendations table
+    const existingRecs = await pool.query(`
+      SELECT DISTINCT ON (symbol)
+        symbol, action, score, normalized_score, confidence,
+        explanation, data_sources_used, generated_at,
+        price_at_recommendation
+      FROM stock_recommendations
+      WHERE symbol = ANY($1)
+      ORDER BY symbol, generated_at DESC
+    `, [symbols]);
+    
+    let saved = 0;
+    
+    // Copy relevant recommendations to big_cap_losers_recommendations
+    for (const rec of existingRecs.rows) {
+      try {
+        const loser = losersResult.rows.find(l => l.symbol === rec.symbol);
+        
+        // Check if we already have this recommendation
+        const existing = await pool.query(`
+          SELECT id FROM big_cap_losers_recommendations
+          WHERE symbol = $1 AND generated_at = $2
+        `, [rec.symbol, rec.generated_at]);
+        
+        if (existing.rows.length === 0) {
+          // Parse explanation if it's a string
+          let explanation = rec.explanation;
+          if (typeof explanation === 'string') {
+            try { explanation = JSON.parse(explanation); } catch(e) { explanation = {}; }
+          }
+          
+          await pool.query(`
+            INSERT INTO big_cap_losers_recommendations (
+              big_cap_loser_id, symbol, action, score, normalized_score, confidence,
+              price_at_recommendation, explanation, data_sources_used, generated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `, [
+            loser?.id || null,
+            rec.symbol,
+            rec.action,
+            rec.score || 0,
+            rec.normalized_score || 0.5,
+            rec.confidence || 0.5,
+            rec.price_at_recommendation || loser?.current_price,
+            JSON.stringify(explanation || {}),
+            rec.data_sources_used || [],
+            rec.generated_at
+          ]);
+          saved++;
+        }
+      } catch (saveErr) {
+        console.error(`Error saving recommendation for ${rec.symbol}:`, saveErr.message);
+      }
+    }
+    
+    // For symbols without recommendations, create placeholder recommendations with regime data
+    const symbolsWithRecs = new Set(existingRecs.rows.map(r => r.symbol));
+    const symbolsWithoutRecs = symbols.filter(s => !symbolsWithRecs.has(s));
+    
+    // Helper function to fetch regime data
+    const fetchRegime = async (symbol) => {
+      return new Promise((resolve) => {
+        const req = http.request({
+          hostname: 'recommendation-engine',
+          port: 8000,
+          path: `/regime/${symbol}`,
+          method: 'GET',
+          timeout: 10000
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              resolve(null);
+            }
+          });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.end();
+      });
+    };
+    
+    for (const symbol of symbolsWithoutRecs) {
+      try {
+        const loser = losersResult.rows.find(l => l.symbol === symbol);
+        const percentDrop = parseFloat(loser?.percent_change || 0);
+        
+        // Fetch market regime for this symbol
+        let market_regime = null;
+        let regime_confidence = null;
+        
+        try {
+          const regimeData = await fetchRegime(symbol);
+          if (regimeData && regimeData.regime) {
+            market_regime = regimeData.regime.label || regimeData.regime.volatility;
+            // Use confidence if available, otherwise use risk_score, or 1 - risk_score for inverse
+            regime_confidence = regimeData.regime.confidence ?? regimeData.regime.risk_score ?? null;
+          }
+        } catch (regimeErr) {
+          console.log(`Could not fetch regime for ${symbol}: ${regimeErr.message}`);
+        }
+        
+        // Calculate a meaningful score based on multiple factors
+        // Factors: drop magnitude, market cap tier, regime risk
+        const dropMagnitude = Math.abs(percentDrop);
+        const marketCap = parseFloat(loser?.market_cap || 0);
+        
+        // Base score from drop magnitude (contrarian: bigger drop = potentially better opportunity)
+        // Maps -5% to -25%+ drop to 0.4-0.8 score range
+        let dropScore = Math.min(0.8, Math.max(0.4, 0.4 + (dropMagnitude - 5) * 0.02));
+        
+        // Market cap factor: larger companies are generally safer (slight boost)
+        let capBoost = 0;
+        if (marketCap >= 100000000000) capBoost = 0.05; // >$100B
+        else if (marketCap >= 50000000000) capBoost = 0.03; // >$50B
+        else if (marketCap >= 10000000000) capBoost = 0.01; // >$10B
+        
+        // Regime adjustment: if we have regime data, adjust based on trend/volatility
+        let regimeAdjust = 0;
+        if (regime_confidence !== null) {
+          // Lower risk_score is better, so invert it
+          regimeAdjust = (0.5 - (regime_confidence || 0.5)) * 0.1;
+        }
+        
+        // Calculate final normalized score (0-1 range)
+        let normalized_score = Math.min(0.95, Math.max(0.3, dropScore + capBoost + regimeAdjust));
+        
+        // Use regime confidence if available, otherwise calculate based on data availability
+        let confidence = regime_confidence ?? (Math.abs(percentDrop) > 15 ? 0.6 : Math.abs(percentDrop) > 10 ? 0.5 : 0.4);
+        
+        // Determine action based on normalized score
+        let action = 'HOLD';
+        if (normalized_score >= 0.65) {
+          action = 'BUY';
+        } else if (normalized_score <= 0.35) {
+          action = 'SELL';
+        }
+        
+        await pool.query(`
+          INSERT INTO big_cap_losers_recommendations (
+            big_cap_loser_id, symbol, action, score, normalized_score, confidence,
+            market_regime, regime_confidence,
+            price_at_recommendation, explanation, data_sources_used, generated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+        `, [
+          loser?.id || null,
+          symbol,
+          action,
+          normalized_score - 0.5, // Convert to -0.5 to 0.5 scale
+          normalized_score,
+          confidence,
+          market_regime,
+          regime_confidence,
+          loser?.current_price,
+          JSON.stringify({
+            summary: `Stock has dropped ${Math.abs(percentDrop).toFixed(1)}% today. This significant move warrants careful analysis before taking action.`,
+            reasoning: percentDrop <= -15 
+              ? 'Large single-day drops can indicate panic selling and potential oversold conditions, presenting possible buying opportunities for contrarian investors.'
+              : 'Moderate drop detected. Recommend monitoring for further developments before taking action.',
+            key_factors: [
+              `${Math.abs(percentDrop).toFixed(1)}% daily decline`,
+              `Market cap: ${loser?.market_cap_formatted || 'Unknown'}`,
+              market_regime ? `Market regime: ${market_regime}` : 'Recommendation pending full analysis'
+            ],
+            risk_factors: [
+              'Large price movements may indicate fundamental issues',
+              'Further downside possible',
+              'Limited real-time data available'
+            ]
+          }),
+          ['price_data', 'regime_data'],
+        ]);
+        saved++;
+      } catch (saveErr) {
+        console.error(`Error creating placeholder recommendation for ${symbol}:`, saveErr.message);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Generated recommendations for ${saved} stocks`,
+      generated: saved,
+      fromExisting: existingRecs.rows.length,
+      newlyGenerated: symbolsWithoutRecs.length,
+      symbols: symbols
+    });
+    
+  } catch (error) {
+    console.error('Error generating recommendations for big cap losers:', error);
+    res.status(500).json({ error: 'Failed to generate recommendations' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/recommendation/:symbol
+ * Get recommendation details for a specific big cap loser
+ */
+app.get('/api/big-cap-losers/recommendation/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.*,
+        bcl.company_name,
+        bcl.current_price,
+        bcl.percent_change,
+        bcl.market_cap_formatted
+      FROM big_cap_losers_recommendations r
+      JOIN big_cap_losers bcl ON bcl.symbol = r.symbol
+      WHERE r.symbol = $1
+      ORDER BY r.generated_at DESC
+      LIMIT 1
+    `, [symbol]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No recommendation found for this symbol' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching recommendation:', error);
+    res.status(500).json({ error: 'Failed to fetch recommendation' });
+  }
+});
+
+/**
+ * POST /api/big-cap-losers/refresh
+ * Trigger a fresh crawl and return the updated results
+ */
+app.post('/api/big-cap-losers/refresh', async (req, res) => {
+  try {
+    console.log('Starting Big Cap Losers refresh...');
+    
+    // Try to trigger the crawler service via HTTP
+    // Use host.docker.internal when running in Docker to reach services on host machine
+    const crawlerServiceUrl = process.env.BIG_CAP_LOSERS_SERVICE_URL || 'http://host.docker.internal:8001';
+    
+    let crawlerStats = null;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+      
+      const crawlerResponse = await fetch(`${crawlerServiceUrl}/refresh`, {
+        method: 'POST',
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (crawlerResponse.ok) {
+        const crawlerData = await crawlerResponse.json();
+        console.log('Crawler service response:', crawlerData);
+        // Capture stats from crawler service
+        crawlerStats = crawlerData.stats || null;
+      } else {
+        console.log('Crawler service returned non-OK status:', crawlerResponse.status);
+      }
+    } catch (fetchError) {
+      // If the crawler service is not running, fall back to just fetching existing data
+      console.log('Could not reach crawler service, fetching existing data:', fetchError.message);
+    }
+    
+    // Wait a moment for DB to update
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Fetch the updated results from database
+    const result = await pool.query(`
+      SELECT DISTINCT ON (symbol)
+        id, symbol, company_name, current_price, price_change, percent_change,
+        market_cap, market_cap_formatted, volume, trading_date, crawled_at
+      FROM big_cap_losers
+      WHERE market_cap >= 1000000000
+      ORDER BY symbol, crawled_at DESC
+    `);
+    
+    const over10Result = await pool.query(`
+      SELECT DISTINCT ON (symbol)
+        id, symbol, company_name, current_price, price_change, percent_change,
+        market_cap, market_cap_formatted, volume, trading_date, crawled_at
+      FROM big_cap_losers
+      WHERE market_cap >= 1000000000
+        AND percent_change <= -10.0
+      ORDER BY symbol, crawled_at DESC
+    `);
+    
+    const allLosers = result.rows.sort((a, b) => a.percent_change - b.percent_change);
+    const over10Losers = over10Result.rows.sort((a, b) => a.percent_change - b.percent_change);
+    
+    res.json({
+      success: true,
+      message: 'Data refreshed successfully',
+      stats: crawlerStats,  // Pass through crawler stats
+      allLosers,
+      over10Losers,
+      refreshedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error refreshing Big Cap Losers:', error);
+    res.status(500).json({ error: 'Failed to refresh data' });
   }
 });
 

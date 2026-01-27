@@ -495,27 +495,35 @@ class LLMAnalyzerWithFallback(BaseSentimentAnalyzer):
     """
     
     # Provider configuration in fallback order
+    # Priority: Groq (free, fast) > Anthropic (reliable) > OpenAI (often rate-limited)
+    # 
+    # Groq is prioritized because:
+    # 1. Free tier with generous limits
+    # 2. Very fast inference (LPU hardware)
+    # 3. Good quality for sentiment analysis
+    #
+    # OpenAI is last because it frequently hits quota limits (429 errors)
     PROVIDERS = [
         {
-            'name': 'openai',
-            'vault_key': 'openai',
-            'env_var': 'OPENAI_API_KEY',
-            'model': 'gpt-4o-mini',
-            'description': 'OpenAI GPT-4o-mini (paid)',
+            'name': 'groq',
+            'vault_key': 'groq',
+            'env_var': 'GROQ_API_KEY',
+            'model': 'llama-3.1-8b-instant',
+            'description': 'Groq Llama 3.1 8B (free tier, fast)',
         },
         {
             'name': 'anthropic',
             'vault_key': 'anthropic',
             'env_var': 'ANTHROPIC_API_KEY',
             'model': 'claude-3-haiku-20240307',
-            'description': 'Anthropic Claude 3 Haiku (paid)',
+            'description': 'Anthropic Claude 3 Haiku (paid, reliable)',
         },
         {
-            'name': 'groq',
-            'vault_key': 'groq',
-            'env_var': 'GROQ_API_KEY',
-            'model': 'llama-3.1-8b-instant',
-            'description': 'Groq Llama 3.1 8B (free tier)',
+            'name': 'openai',
+            'vault_key': 'openai',
+            'env_var': 'OPENAI_API_KEY',
+            'model': 'gpt-4o-mini',
+            'description': 'OpenAI GPT-4o-mini (paid, often rate-limited)',
         },
     ]
     
