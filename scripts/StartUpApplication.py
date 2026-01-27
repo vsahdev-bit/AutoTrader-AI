@@ -10,7 +10,11 @@ This script orchestrates the complete startup of the AutoTrader application:
 4. Tests all LLM connectors (OpenAI, Anthropic, Groq)
 5. Runs News Sentiment Service to fetch and analyze news
 6. Runs recommendations for all watchlist symbols
-7. Signals UI to refresh and display new data
+7. Starts Jim Cramer Service (daily at 9 AM PST, with GROQ API key from Vault)
+8. Starts Big Cap Losers Service (HTTP server on port 8001, hourly crawls)
+9. Starts API Gateway (port 3001)
+10. Starts Frontend Web App (Vite dev server on port 5173)
+11. Signals UI to refresh and display new data
 
 Usage:
     python scripts/StartUpApplication.py
@@ -851,10 +855,439 @@ class StartUpApplication:
             )
     
     # =========================================================================
-    # STEP 7: Refresh UI / Signal Completion
+    # STEP 7: Start Jim Cramer Service
     # =========================================================================
     
-    async def step7_refresh_ui(self) -> StepResult:
+    async def step7_start_jim_cramer_service(self) -> StepResult:
+        """Start the Jim Cramer service with GROQ API key from Vault."""
+        start = time.time()
+        
+        self.log("Starting Jim Cramer Service...")
+        
+        try:
+            # Get GROQ API key from Vault
+            self.log("  Retrieving GROQ API key from Vault...")
+            result = subprocess.run(
+                ["docker", "exec", "autotrader-vault", "sh", "-c",
+                 "VAULT_TOKEN=dev-root-token vault kv get -field=api_key secret/autotrader/config/groq"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            groq_api_key = result.stdout.strip()
+            if not groq_api_key:
+                return StepResult(
+                    name="Jim Cramer Service",
+                    status=StepStatus.WARNING,
+                    message="Could not retrieve GROQ API key from Vault",
+                    duration_seconds=time.time() - start,
+                )
+            
+            self.log("  ✅ GROQ API key retrieved")
+            
+            # Set environment variable and start the service
+            os.environ['GROQ_API_KEY'] = groq_api_key
+            
+            docker_compose_path = os.path.join(PROJECT_ROOT, "infrastructure", "docker", "docker-compose.yml")
+            
+            self.log("  Starting Jim Cramer container...")
+            result = subprocess.run(
+                ["docker-compose", "-f", docker_compose_path, "up", "-d", "--build", "jim-cramer-service"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=PROJECT_ROOT,
+                env={**os.environ, 'GROQ_API_KEY': groq_api_key},
+            )
+            
+            if result.returncode != 0:
+                self.log(f"  ⚠️ docker-compose stderr: {result.stderr[:200]}")
+            
+            # Wait for container to start and check logs
+            await asyncio.sleep(5)
+            
+            # Check if container is running
+            check_result = subprocess.run(
+                ["docker", "logs", "--tail", "10", "autotrader-jim-cramer"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            logs = check_result.stdout + check_result.stderr
+            
+            if "JIM CRAMER SERVICE - SCHEDULED MODE" in logs:
+                # Check if GROQ is configured
+                if "providers: ['groq']" in logs or "providers: [\"groq\"]" in logs:
+                    return StepResult(
+                        name="Jim Cramer Service",
+                        status=StepStatus.SUCCESS,
+                        message="Started with GROQ LLM provider (runs daily at 9 AM PST)",
+                        duration_seconds=time.time() - start,
+                        details=[
+                            "GROQ API key configured from Vault",
+                            "Scheduled to run daily at 9:00 AM PST (17:00 UTC)",
+                            "View logs: docker logs -f autotrader-jim-cramer",
+                        ],
+                    )
+                else:
+                    return StepResult(
+                        name="Jim Cramer Service",
+                        status=StepStatus.WARNING,
+                        message="Started but GROQ not detected in logs",
+                        duration_seconds=time.time() - start,
+                    )
+            else:
+                return StepResult(
+                    name="Jim Cramer Service",
+                    status=StepStatus.WARNING,
+                    message="Container started but service mode not confirmed",
+                    duration_seconds=time.time() - start,
+                )
+                
+        except subprocess.TimeoutExpired:
+            return StepResult(
+                name="Jim Cramer Service",
+                status=StepStatus.FAILED,
+                message="Timed out starting service",
+                duration_seconds=time.time() - start,
+            )
+        except Exception as e:
+            return StepResult(
+                name="Jim Cramer Service",
+                status=StepStatus.FAILED,
+                message=str(e)[:50],
+                duration_seconds=time.time() - start,
+            )
+    
+    # =========================================================================
+    # STEP 8: Start Big Cap Losers Service
+    # =========================================================================
+    
+    async def step8_start_big_cap_losers_service(self) -> StepResult:
+        """Start the Big Cap Losers service with HTTP server."""
+        start = time.time()
+        
+        self.log("Starting Big Cap Losers Service...")
+        
+        try:
+            docker_compose_path = os.path.join(PROJECT_ROOT, "infrastructure", "docker", "docker-compose.yml")
+            
+            self.log("  Starting Big Cap Losers container...")
+            result = subprocess.run(
+                ["docker-compose", "-f", docker_compose_path, "up", "-d", "--build", "big-cap-losers-service"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=PROJECT_ROOT,
+            )
+            
+            if result.returncode != 0:
+                self.log(f"  ⚠️ docker-compose stderr: {result.stderr[:200]}")
+            
+            # Wait for container to start
+            await asyncio.sleep(5)
+            
+            # Check if HTTP server is responding
+            import aiohttp
+            try:
+                async with aiohttp.ClientSession() as session:
+                    # Try to reach the health endpoint
+                    async with session.get(
+                        "http://localhost:8001/health",
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status == 200:
+                            return StepResult(
+                                name="Big Cap Losers Service",
+                                status=StepStatus.SUCCESS,
+                                message="Started with HTTP server on port 8001",
+                                duration_seconds=time.time() - start,
+                                details=[
+                                    "HTTP server running on port 8001",
+                                    "Crawls Yahoo Finance every 1 hour",
+                                    "Refresh endpoint: POST /refresh",
+                                    "Health check: GET /health",
+                                ],
+                            )
+            except Exception as e:
+                self.log(f"  ⚠️ HTTP health check failed: {e}")
+            
+            # Check container logs as fallback
+            check_result = subprocess.run(
+                ["docker", "logs", "--tail", "10", "autotrader-big-cap-losers"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            
+            logs = check_result.stdout + check_result.stderr
+            
+            if "HTTP server listening" in logs or "listening on port" in logs.lower():
+                return StepResult(
+                    name="Big Cap Losers Service",
+                    status=StepStatus.SUCCESS,
+                    message="Started (HTTP server detected in logs)",
+                    duration_seconds=time.time() - start,
+                )
+            elif "BIG CAP LOSERS" in logs.upper():
+                return StepResult(
+                    name="Big Cap Losers Service",
+                    status=StepStatus.WARNING,
+                    message="Container running but HTTP server not confirmed",
+                    duration_seconds=time.time() - start,
+                )
+            else:
+                return StepResult(
+                    name="Big Cap Losers Service",
+                    status=StepStatus.WARNING,
+                    message="Container started but service not confirmed",
+                    duration_seconds=time.time() - start,
+                )
+                
+        except subprocess.TimeoutExpired:
+            return StepResult(
+                name="Big Cap Losers Service",
+                status=StepStatus.FAILED,
+                message="Timed out starting service",
+                duration_seconds=time.time() - start,
+            )
+        except Exception as e:
+            return StepResult(
+                name="Big Cap Losers Service",
+                status=StepStatus.FAILED,
+                message=str(e)[:50],
+                duration_seconds=time.time() - start,
+            )
+    
+    # =========================================================================
+    # STEP 9: Start API Gateway
+    # =========================================================================
+    
+    async def step9_start_api_gateway(self) -> StepResult:
+        """Start the API Gateway service."""
+        start = time.time()
+        
+        self.log("Starting API Gateway...")
+        
+        try:
+            docker_compose_path = os.path.join(PROJECT_ROOT, "infrastructure", "docker", "docker-compose.yml")
+            
+            self.log("  Starting API Gateway container...")
+            result = subprocess.run(
+                ["docker-compose", "-f", docker_compose_path, "up", "-d", "api-gateway"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=PROJECT_ROOT,
+            )
+            
+            if result.returncode != 0:
+                self.log(f"  ⚠️ docker-compose stderr: {result.stderr[:200]}")
+            
+            # Wait for service to start
+            await asyncio.sleep(3)
+            
+            # Check if API Gateway is responding
+            import aiohttp
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "http://localhost:3001/health",
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as resp:
+                        if resp.status == 200:
+                            return StepResult(
+                                name="API Gateway",
+                                status=StepStatus.SUCCESS,
+                                message="Running on port 3001",
+                                duration_seconds=time.time() - start,
+                                details=[
+                                    "API Gateway: http://localhost:3001",
+                                    "Health check: http://localhost:3001/health",
+                                ],
+                            )
+                        else:
+                            return StepResult(
+                                name="API Gateway",
+                                status=StepStatus.WARNING,
+                                message=f"Responding with status {resp.status}",
+                                duration_seconds=time.time() - start,
+                            )
+            except Exception as e:
+                return StepResult(
+                    name="API Gateway",
+                    status=StepStatus.WARNING,
+                    message=f"Health check failed: {str(e)[:30]}",
+                    duration_seconds=time.time() - start,
+                )
+                
+        except subprocess.TimeoutExpired:
+            return StepResult(
+                name="API Gateway",
+                status=StepStatus.FAILED,
+                message="Timed out starting service",
+                duration_seconds=time.time() - start,
+            )
+        except Exception as e:
+            return StepResult(
+                name="API Gateway",
+                status=StepStatus.FAILED,
+                message=str(e)[:50],
+                duration_seconds=time.time() - start,
+            )
+    
+    # =========================================================================
+    # STEP 10: Start Frontend (Web App)
+    # =========================================================================
+    
+    async def step10_start_frontend(self) -> StepResult:
+        """Start the frontend web application."""
+        start = time.time()
+        
+        self.log("Starting Frontend (Web App)...")
+        
+        try:
+            # Check if npm/node is available
+            node_paths = [
+                os.path.expanduser("~/.nvm/versions/node/v20.16.0/bin"),
+                "/usr/local/bin",
+                "/usr/bin",
+            ]
+            
+            npm_path = None
+            for path in node_paths:
+                potential_npm = os.path.join(path, "npm")
+                if os.path.exists(potential_npm):
+                    npm_path = potential_npm
+                    os.environ['PATH'] = f"{path}:{os.environ.get('PATH', '')}"
+                    break
+            
+            if not npm_path:
+                # Try Docker-based frontend
+                self.log("  npm not found locally, trying Docker...")
+                docker_compose_path = os.path.join(PROJECT_ROOT, "infrastructure", "docker", "docker-compose.yml")
+                
+                result = subprocess.run(
+                    ["docker-compose", "-f", docker_compose_path, "up", "-d", "web-app"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=PROJECT_ROOT,
+                )
+                
+                await asyncio.sleep(5)
+                
+                # Check Docker container
+                import aiohttp
+                for port in [5173, 5174, 3000]:
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(
+                                f"http://localhost:{port}/",
+                                timeout=aiohttp.ClientTimeout(total=5)
+                            ) as resp:
+                                if resp.status == 200:
+                                    return StepResult(
+                                        name="Frontend",
+                                        status=StepStatus.SUCCESS,
+                                        message=f"Running on port {port} (Docker)",
+                                        duration_seconds=time.time() - start,
+                                        details=[f"Frontend URL: http://localhost:{port}"],
+                                    )
+                    except:
+                        continue
+                
+                return StepResult(
+                    name="Frontend",
+                    status=StepStatus.WARNING,
+                    message="Docker container started but not responding",
+                    duration_seconds=time.time() - start,
+                )
+            
+            # Start with npm locally
+            web_app_dir = os.path.join(PROJECT_ROOT, "web-app")
+            
+            # Check if already running
+            import aiohttp
+            for port in [5173, 5174]:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"http://localhost:{port}/",
+                            timeout=aiohttp.ClientTimeout(total=3)
+                        ) as resp:
+                            if resp.status == 200:
+                                self.log(f"  ✅ Frontend already running on port {port}")
+                                return StepResult(
+                                    name="Frontend",
+                                    status=StepStatus.SUCCESS,
+                                    message=f"Already running on port {port}",
+                                    duration_seconds=time.time() - start,
+                                    details=[f"Frontend URL: http://localhost:{port}"],
+                                )
+                except:
+                    continue
+            
+            # Start Vite dev server in background
+            self.log("  Starting Vite dev server...")
+            log_file = os.path.join(PROJECT_ROOT, "tmp_rovodev_frontend.log")
+            
+            with open(log_file, 'w') as f:
+                process = subprocess.Popen(
+                    ["npm", "run", "dev"],
+                    cwd=web_app_dir,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    env=os.environ,
+                )
+            
+            # Wait for server to start
+            await asyncio.sleep(5)
+            
+            # Check if running
+            for port in [5173, 5174]:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"http://localhost:{port}/",
+                            timeout=aiohttp.ClientTimeout(total=5)
+                        ) as resp:
+                            if resp.status == 200:
+                                return StepResult(
+                                    name="Frontend",
+                                    status=StepStatus.SUCCESS,
+                                    message=f"Started on port {port}",
+                                    duration_seconds=time.time() - start,
+                                    details=[
+                                        f"Frontend URL: http://localhost:{port}",
+                                        f"Log file: {log_file}",
+                                    ],
+                                )
+                except:
+                    continue
+            
+            return StepResult(
+                name="Frontend",
+                status=StepStatus.WARNING,
+                message="Started but not responding yet",
+                duration_seconds=time.time() - start,
+            )
+                
+        except Exception as e:
+            return StepResult(
+                name="Frontend",
+                status=StepStatus.FAILED,
+                message=str(e)[:50],
+                duration_seconds=time.time() - start,
+            )
+    
+    # =========================================================================
+    # STEP 11: Refresh UI / Signal Completion
+    # =========================================================================
+    
+    async def step11_refresh_ui(self) -> StepResult:
         """Signal UI to refresh recommendations data."""
         start = time.time()
         
@@ -923,7 +1356,11 @@ class StartUpApplication:
             ("Test LLM Connectors", self.step4_test_llm_connectors),
             ("News Sentiment Service", self.step6_start_news_sentiment_service),
             ("Run Recommendations", self.step5_run_recommendations),
-            ("Refresh UI", self.step7_refresh_ui),
+            ("Jim Cramer Service", self.step7_start_jim_cramer_service),
+            ("Big Cap Losers Service", self.step8_start_big_cap_losers_service),
+            ("API Gateway", self.step9_start_api_gateway),
+            ("Frontend", self.step10_start_frontend),
+            ("Refresh UI", self.step11_refresh_ui),
         ]
         
         total_steps = len(steps)

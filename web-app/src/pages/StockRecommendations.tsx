@@ -527,8 +527,152 @@ function StockRecommendationTable({
           {/* Row 1: Labels */}
           <p className="text-sm text-gray-500">Symbol</p>
           <p className="text-sm text-gray-500">Rating</p>
-          <p className="text-sm text-gray-500">Market Regime</p>
-          <p className="text-sm text-gray-500 text-right">Position Size</p>
+          {/* Market Regime Label with Info Tooltip */}
+          <div className="flex items-center gap-1 relative group/regimeinfo">
+            <p className="text-sm text-gray-500">Market Regime</p>
+            <svg 
+              className="w-4 h-4 text-gray-400 cursor-help hover:text-blue-500 transition-colors" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {/* Market Regime Explanation Tooltip */}
+            <div className="absolute left-0 top-6 w-[420px] p-4 bg-gray-900 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover/regimeinfo:opacity-100 group-hover/regimeinfo:visible transition-all duration-200 z-50">
+              <div className="font-bold text-sm mb-2 text-blue-300">🌡️ What is Market Regime?</div>
+              <p className="mb-3 text-gray-200">
+                Market Regime classifies the <strong className="text-white">current market conditions</strong> across 4 dimensions. The same trading signal can have very different outcomes depending on the regime.
+              </p>
+              
+              <div className="font-bold text-sm mb-2 text-blue-300">📊 The 4 Regime Dimensions:</div>
+              <div className="space-y-2 mb-3">
+                {/* Volatility */}
+                <div className="bg-gray-800 rounded p-2">
+                  <div className="font-semibold text-yellow-400 mb-1">1. Volatility</div>
+                  <p className="text-gray-300 mb-1">How much prices are swinging</p>
+                  <div className="flex gap-1 flex-wrap">
+                    <span className="px-2 py-0.5 rounded bg-green-700 text-white">Low</span>
+                    <span className="px-2 py-0.5 rounded bg-gray-600 text-white">Normal</span>
+                    <span className="px-2 py-0.5 rounded bg-orange-600 text-white">High</span>
+                    <span className="px-2 py-0.5 rounded bg-red-700 text-white">Extreme</span>
+                  </div>
+                </div>
+                
+                {/* Trend */}
+                <div className="bg-gray-800 rounded p-2">
+                  <div className="font-semibold text-green-400 mb-1">2. Trend</div>
+                  <p className="text-gray-300 mb-1">Market direction and strength</p>
+                  <div className="flex gap-1 flex-wrap">
+                    <span className="px-2 py-0.5 rounded bg-green-700 text-white">📈 Strong Bull</span>
+                    <span className="px-2 py-0.5 rounded bg-green-600 text-white">↗️ Uptrend</span>
+                    <span className="px-2 py-0.5 rounded bg-blue-600 text-white">↔️ Range</span>
+                    <span className="px-2 py-0.5 rounded bg-yellow-600 text-white">〰️ Choppy</span>
+                    <span className="px-2 py-0.5 rounded bg-red-600 text-white">↘️ Downtrend</span>
+                    <span className="px-2 py-0.5 rounded bg-red-700 text-white">📉 Strong Bear</span>
+                  </div>
+                </div>
+                
+                {/* Liquidity */}
+                <div className="bg-gray-800 rounded p-2">
+                  <div className="font-semibold text-cyan-400 mb-1">3. Liquidity</div>
+                  <p className="text-gray-300 mb-1">Trading volume vs average</p>
+                  <div className="flex gap-1 flex-wrap">
+                    <span className="px-2 py-0.5 rounded bg-green-700 text-white">High</span>
+                    <span className="px-2 py-0.5 rounded bg-gray-600 text-white">Normal</span>
+                    <span className="px-2 py-0.5 rounded bg-orange-600 text-white">Thin</span>
+                    <span className="px-2 py-0.5 rounded bg-red-700 text-white">Illiquid</span>
+                  </div>
+                </div>
+                
+                {/* Information */}
+                <div className="bg-gray-800 rounded p-2">
+                  <div className="font-semibold text-purple-400 mb-1">4. Information Flow</div>
+                  <p className="text-gray-300 mb-1">News and social media activity</p>
+                  <div className="flex gap-1 flex-wrap">
+                    <span className="px-2 py-0.5 rounded bg-gray-600 text-white">Quiet</span>
+                    <span className="px-2 py-0.5 rounded bg-gray-500 text-white">Normal</span>
+                    <span className="px-2 py-0.5 rounded bg-blue-600 text-white">📰 News-Driven</span>
+                    <span className="px-2 py-0.5 rounded bg-purple-600 text-white">📱 Social-Driven</span>
+                    <span className="px-2 py-0.5 rounded bg-amber-600 text-white">📊 Earnings</span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="font-bold text-sm mb-1 text-blue-300">🎯 Why It Matters:</div>
+              <p className="text-gray-200 mb-2">
+                <strong className="text-white">The same signal behaves differently in different regimes:</strong>
+              </p>
+              <div className="bg-gray-800 rounded p-2 text-gray-300">
+                <div className="mb-1"><span className="text-green-400">✓</span> RSI Oversold + Low Vol + Uptrend → <strong className="text-green-400">Strong BUY</strong></div>
+                <div className="mb-1"><span className="text-yellow-400">⚠</span> RSI Oversold + High Vol + News-Driven → <strong className="text-yellow-400">HOLD</strong></div>
+                <div><span className="text-red-400">✗</span> RSI Oversold + Extreme Vol + Choppy → <strong className="text-red-400">SKIP</strong></div>
+              </div>
+              
+              <div className="mt-3 pt-2 border-t border-gray-700 text-gray-400">
+                <strong className="text-blue-300">Pro Tip:</strong> Click on the regime badge to expand full details including signal weights, stop-loss, and risk management recommendations.
+              </div>
+              
+              {/* Arrow pointer */}
+              <div className="absolute -top-2 left-4 w-3 h-3 bg-gray-900 transform rotate-45"></div>
+            </div>
+          </div>
+          {/* Position Size Label with Info Tooltip */}
+          <div className="flex items-center justify-end gap-1 relative group/posinfo">
+            <p className="text-sm text-gray-500">Position Size</p>
+            <svg 
+              className="w-4 h-4 text-gray-400 cursor-help hover:text-blue-500 transition-colors" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {/* Position Size Explanation Tooltip */}
+            <div className="absolute right-0 top-6 w-96 p-4 bg-gray-900 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover/posinfo:opacity-100 group-hover/posinfo:visible transition-all duration-200 z-50">
+              <div className="font-bold text-sm mb-2 text-blue-300">📊 What is Position Size?</div>
+              <p className="mb-2 text-gray-200">
+                Position Size tells you <strong className="text-white">how much of your standard investment amount</strong> you should consider using for this stock, based on current market conditions (regime).
+              </p>
+              
+              <div className="font-bold text-sm mb-1 mt-3 text-blue-300">🎯 How to Interpret:</div>
+              <div className="space-y-1 mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-16 text-center py-0.5 rounded bg-green-600 text-white font-semibold">80-125%</span>
+                  <span className="text-gray-300">Favorable conditions — use normal position size</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-16 text-center py-0.5 rounded bg-orange-500 text-white font-semibold">50-80%</span>
+                  <span className="text-gray-300">Elevated risk — consider reducing position</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-16 text-center py-0.5 rounded bg-red-600 text-white font-semibold">&lt;50%</span>
+                  <span className="text-gray-300">High risk — significantly smaller positions</span>
+                </div>
+              </div>
+              
+              <div className="font-bold text-sm mb-1 mt-3 text-blue-300">💡 Example:</div>
+              <p className="mb-2 text-gray-200">
+                If you normally invest <strong className="text-white">$1,000</strong> per trade and Position Size shows <strong className="text-yellow-400">25%</strong>, consider investing only <strong className="text-yellow-400">$250</strong> due to unfavorable market conditions.
+              </p>
+              
+              <div className="font-bold text-sm mb-1 mt-3 text-blue-300">⚡ Factors That Reduce Position Size:</div>
+              <ul className="space-y-0.5 text-gray-300 list-none">
+                <li>• <strong className="text-white">High/Extreme Volatility:</strong> More price swings = more risk</li>
+                <li>• <strong className="text-white">Choppy Markets:</strong> No clear trend = harder to profit</li>
+                <li>• <strong className="text-white">Low Liquidity:</strong> Harder to buy/sell at good prices</li>
+                <li>• <strong className="text-white">Earnings Season:</strong> Unpredictable price gaps possible</li>
+                <li>• <strong className="text-white">Social-Driven:</strong> Meme-stock behavior = high reversal risk</li>
+              </ul>
+              
+              <div className="mt-3 pt-2 border-t border-gray-700 text-gray-400">
+                <strong className="text-blue-300">Key Insight:</strong> Lower position size means the system is less confident in the <em>current market environment</em>, not necessarily the stock itself. It's a risk management signal.
+              </div>
+              
+              {/* Arrow pointer */}
+              <div className="absolute -top-2 right-4 w-3 h-3 bg-gray-900 transform rotate-45"></div>
+            </div>
+          </div>
           <p className="text-sm text-gray-500 text-right">Latest Price</p>
           
           {/* Row 2: Values - all with consistent height */}
@@ -993,7 +1137,7 @@ export default function StockRecommendations() {
     <div className="min-h-screen bg-gray-50">
       <Header />
       
-      {/* Page Title and Quick Navigation - Fixed below header */}
+      {/* Page Title - Fixed below header */}
       <div className="bg-white border-b border-gray-200 sticky top-[72px] z-40 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -1002,7 +1146,7 @@ export default function StockRecommendations() {
                 Stock Recommendations
               </h1>
               <p className="mt-1 text-sm text-gray-500">
-                AI-generated trading recommendations for your watchlist • Updated every 2 hours (6 AM - 1 PM PST)
+                AI-generated trading recommendations for your watchlist • Updated daily at 7:30 AM & 12:00 PM PST
               </p>
             </div>
             
@@ -1031,30 +1175,87 @@ export default function StockRecommendations() {
               </button>
             </div>
           </div>
-          
-          {/* Quick navigation */}
-          {watchlist.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-gray-100">
-              <span className="text-sm text-gray-500">Jump to:</span>
-              {watchlist.map(({ symbol }) => (
-                <button
-                  key={symbol}
-                  onClick={() => handleSymbolClick(symbol)}
-                  className={`px-3 py-1 text-sm rounded-full transition-colors ${
-                    targetSymbol === symbol
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {symbol}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       </div>
       
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Main content with sidebar layout */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex gap-6">
+          {/* Left Sidebar - Stock Navigation */}
+          {!loading && !error && watchlist.length > 0 && (
+            <aside className="hidden lg:block w-56 flex-shrink-0">
+              <div className="sticky top-[160px] bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                  <h3 className="text-sm font-semibold text-gray-700">Watchlist</h3>
+                  <p className="text-xs text-gray-500">{watchlist.length} stocks</p>
+                </div>
+                <nav className="max-h-[calc(100vh-240px)] overflow-y-auto">
+                  {watchlist.map(({ symbol, companyName }) => {
+                    const data = symbolData.get(symbol)
+                    const latestRec = data?.recommendations?.[0]
+                    const isActive = targetSymbol === symbol
+                    
+                    return (
+                      <button
+                        key={symbol}
+                        onClick={() => handleSymbolClick(symbol)}
+                        className={`w-full px-4 py-3 text-left border-b border-gray-100 last:border-b-0 transition-colors ${
+                          isActive
+                            ? 'bg-blue-50 border-l-4 border-l-blue-600'
+                            : 'hover:bg-gray-50 border-l-4 border-l-transparent'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className={`font-semibold text-sm ${isActive ? 'text-blue-700' : 'text-gray-900'}`}>
+                            {symbol}
+                          </span>
+                          {latestRec && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                              latestRec.action === 'BUY' 
+                                ? 'bg-green-100 text-green-700' 
+                                : latestRec.action === 'SELL' 
+                                  ? 'bg-red-100 text-red-700' 
+                                  : 'bg-yellow-100 text-yellow-700'
+                            }`}>
+                              {latestRec.action}
+                            </span>
+                          )}
+                        </div>
+                        <p className={`text-xs truncate mt-0.5 ${isActive ? 'text-blue-600' : 'text-gray-500'}`}>
+                          {companyName}
+                        </p>
+                      </button>
+                    )
+                  })}
+                </nav>
+              </div>
+            </aside>
+          )}
+          
+          {/* Mobile stock selector - shown on smaller screens */}
+          {!loading && !error && watchlist.length > 0 && (
+            <div className="lg:hidden mb-4 w-full">
+              <label htmlFor="stock-select" className="block text-sm font-medium text-gray-700 mb-2">
+                Select Stock
+              </label>
+              <select
+                id="stock-select"
+                value={targetSymbol}
+                onChange={(e) => handleSymbolClick(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">All Stocks</option>
+                {watchlist.map(({ symbol, companyName }) => (
+                  <option key={symbol} value={symbol}>
+                    {symbol} - {companyName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          
+          {/* Main content area */}
+          <main className="flex-1 min-w-0">
         {/* Loading state */}
         {loading && (
           <div className="bg-white rounded-xl shadow-sm p-12 text-center">
@@ -1163,14 +1364,16 @@ export default function StockRecommendations() {
                 </div>
               </div>
               <p className="mt-4 text-xs text-gray-500">
-                Recommendations are generated every 2 hours using news sentiment analysis 
+                Recommendations are generated twice daily (7:30 AM & 12:00 PM PST) using news sentiment analysis 
                 and technical indicators. The system keeps the last 10 recommendations 
                 for each stock symbol.
               </p>
             </div>
           </div>
         )}
-      </main>
+          </main>
+        </div>
+      </div>
       
       {/* Footer */}
       <footer className="bg-white border-t border-gray-200 mt-auto">

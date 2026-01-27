@@ -153,6 +153,11 @@ class NewsFeatureProvider:
         features = await provider.get_features(["AAPL", "GOOGL", "MSFT"])
         for symbol, feat in features.items():
             print(f"{symbol}: sentiment_1d={feat.sentiment_1d}")
+    
+    Note on Concurrency:
+        This provider creates new ClickHouse client instances per query to avoid
+        the "concurrent queries within the same session" error when processing
+        multiple symbols in parallel. Each async operation gets its own client.
     """
     
     def __init__(
@@ -182,29 +187,53 @@ class NewsFeatureProvider:
         self.redis_url = redis_url
         self.cache_ttl = cache_ttl_seconds
         
-        self.ch_client = None
+        self._clickhouse_available = False
         self.redis_client = None
         self._initialized = False
+    
+    def _create_clickhouse_client(self):
+        """
+        Create a new ClickHouse client instance.
+        
+        Each query gets its own client to avoid concurrency issues.
+        The clickhouse-connect library's clients are not thread-safe
+        for concurrent queries within the same session.
+        """
+        try:
+            import clickhouse_connect
+            return clickhouse_connect.get_client(
+                host=self.clickhouse_host,
+                port=self.clickhouse_port,
+                username=self.clickhouse_user,
+                password=self.clickhouse_password,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create ClickHouse client: {e}")
+            return None
     
     async def initialize(self):
         """Initialize connections to ClickHouse and Redis."""
         if self._initialized:
             return
         
-        # Initialize ClickHouse
+        # Test ClickHouse connectivity
         try:
             import clickhouse_connect
             
-            self.ch_client = clickhouse_connect.get_client(
+            test_client = clickhouse_connect.get_client(
                 host=self.clickhouse_host,
                 port=self.clickhouse_port,
                 username=self.clickhouse_user,
                 password=self.clickhouse_password,
             )
-            logger.info("Connected to ClickHouse")
+            # Quick connectivity test
+            test_client.query("SELECT 1")
+            test_client.close()
+            self._clickhouse_available = True
+            logger.info("ClickHouse connectivity verified")
         except Exception as e:
             logger.warning(f"ClickHouse not available: {e}")
-            self.ch_client = None
+            self._clickhouse_available = False
         
         # Initialize Redis cache
         if self.redis_url:
@@ -246,7 +275,7 @@ class NewsFeatureProvider:
         missing = [s for s in symbols if s not in cached]
         
         # Fetch missing from ClickHouse
-        if missing and self.ch_client:
+        if missing and self._clickhouse_available:
             fetched = await self._fetch_from_clickhouse(missing, feature_date)
             cached.update(fetched)
             
@@ -331,7 +360,7 @@ class NewsFeatureProvider:
         feature_date: date,
     ) -> Dict[str, NewsFeatures]:
         """Fetch features from ClickHouse."""
-        if not self.ch_client:
+        if not self._clickhouse_available:
             return {}
         
         try:
@@ -383,11 +412,17 @@ class NewsFeatureProvider:
           AND feature_date = '{feature_date.isoformat()}'
         """
         
+        def execute_query():
+            client = self._create_clickhouse_client()
+            if not client:
+                return []
+            try:
+                return client.query(query).result_rows
+            finally:
+                client.close()
+        
         loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(
-            None,
-            lambda: self.ch_client.query(query).result_rows
-        )
+        rows = await loop.run_in_executor(None, execute_query)
         
         result = {}
         for row in rows:
@@ -474,11 +509,17 @@ class NewsFeatureProvider:
         GROUP BY symbol
         """
         
+        def execute_query():
+            client = self._create_clickhouse_client()
+            if not client:
+                return []
+            try:
+                return client.query(query).result_rows
+            finally:
+                client.close()
+        
         loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(
-            None,
-            lambda: self.ch_client.query(query).result_rows
-        )
+        rows = await loop.run_in_executor(None, execute_query)
         
         result = {}
         for row in rows:
@@ -565,7 +606,7 @@ class NewsFeatureProvider:
         Returns:
             List of article dictionaries with title, source, summary, sentiment, etc.
         """
-        if not self.ch_client:
+        if not self._clickhouse_available:
             return []
         
         try:
@@ -585,11 +626,17 @@ class NewsFeatureProvider:
             LIMIT {limit}
             """
             
+            def execute_query():
+                client = self._create_clickhouse_client()
+                if not client:
+                    return []
+                try:
+                    return client.query(query).result_rows
+                finally:
+                    client.close()
+            
             loop = asyncio.get_event_loop()
-            rows = await loop.run_in_executor(
-                None,
-                lambda: self.ch_client.query(query).result_rows
-            )
+            rows = await loop.run_in_executor(None, execute_query)
             
             articles = []
             for row in rows:
@@ -613,5 +660,7 @@ class NewsFeatureProvider:
         """Close connections."""
         if self.redis_client:
             await self.redis_client.close()
-        if self.ch_client:
-            self.ch_client.close()
+        # ClickHouse clients are created per-query and closed after each use,
+        # so no persistent client to close here.
+        self._clickhouse_available = False
+        self._initialized = False

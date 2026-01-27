@@ -65,8 +65,11 @@ services:
     ports:
       - "5173:5173"
     environment:
+      # Proxy URLs (used by Vite server inside Docker) - use Docker internal hostnames
       - VITE_API_URL=http://api-gateway:3001
       - VITE_RECOMMENDATION_ENGINE_URL=http://recommendation-engine:8000
+      # Public URLs (used by browser) - use localhost
+      - VITE_PUBLIC_API_URL=http://localhost:3001
     depends_on:
       - api-gateway
       - recommendation-engine
@@ -82,7 +85,7 @@ services:
   # ===========================================================================
   # Recommendation Engine - ML Service for Stock Recommendations
   # ===========================================================================
-  # Generates AI-powered trading recommendations every 2 hours
+  # Generates AI-powered trading recommendations twice daily (7:30 AM & 12:00 PM PST)
   # Uses news sentiment and technical indicators to produce BUY/SELL/HOLD signals
   # ===========================================================================
   recommendation-engine:
@@ -138,6 +141,58 @@ services:
       clickhouse:
         condition: service_healthy
       vault:
+        condition: service_healthy
+    networks:
+      - autotrader-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Jim Cramer Advice Service - Crawls and Analyzes Cramer's Recommendations
+  # ===========================================================================
+  # Runs daily at 9 AM PST (17:00 UTC) to:
+  # - Crawl CNBC, Google News, and other sources for Jim Cramer content
+  # - Analyze articles with LLM (Groq) to extract stock recommendations
+  # - Generate daily summary with bullish/bearish picks
+  # - Store results in PostgreSQL for the Jim Cramer Advice page
+  # ===========================================================================
+  jim-cramer-service:
+    build:
+      context: ../../ml-services/jim_cramer_service
+      dockerfile: Dockerfile
+    container_name: autotrader-jim-cramer
+    environment:
+      - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - autotrader-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Big Cap Losers Service - Tracks Large Cap Stocks with Significant Drops
+  # ===========================================================================
+  # Runs every 1 hour to:
+  # - Crawl Yahoo Finance losers page
+  # - Filter for stocks with market cap > $1B
+  # - Track stocks that have fallen significantly (especially > 10%)
+  # ===========================================================================
+  big-cap-losers-service:
+    build:
+      context: ../../ml-services/big_cap_losers_service
+      dockerfile: Dockerfile
+    container_name: autotrader-big-cap-losers
+    environment:
+      - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
+    depends_on:
+      postgres:
         condition: service_healthy
     networks:
       - autotrader-network

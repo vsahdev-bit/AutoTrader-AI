@@ -33,6 +33,12 @@ class JobStatus(Enum):
     DISABLED = "disabled"
 
 
+class ScheduleType(Enum):
+    """Type of schedule for a job."""
+    INTERVAL = "interval"  # Run every X seconds
+    DAILY = "daily"        # Run at specific time each day
+
+
 @dataclass
 class JobConfig:
     """
@@ -40,7 +46,10 @@ class JobConfig:
     
     Attributes:
         name: Unique job identifier
-        interval_seconds: How often to run the job
+        interval_seconds: How often to run the job (for INTERVAL type)
+        schedule_type: Type of schedule (INTERVAL or DAILY)
+        daily_hour_utc: Hour to run (0-23 UTC) for DAILY schedule
+        daily_minute_utc: Minute to run (0-59) for DAILY schedule
         run_immediately: Whether to run on scheduler start
         max_retries: Number of retries on failure
         retry_delay_seconds: Delay between retries
@@ -48,7 +57,10 @@ class JobConfig:
         enabled: Whether the job is active
     """
     name: str
-    interval_seconds: int
+    interval_seconds: int = 3600  # Default 1 hour for interval type
+    schedule_type: ScheduleType = ScheduleType.INTERVAL
+    daily_hour_utc: int = 0      # Hour in UTC for daily schedule
+    daily_minute_utc: int = 0    # Minute for daily schedule
     run_immediately: bool = True
     max_retries: int = 3
     retry_delay_seconds: int = 30
@@ -116,11 +128,14 @@ class PipelineScheduler:
         self,
         name: str,
         callback: Callable,
-        interval_seconds: int,
+        interval_seconds: int = 3600,
         run_immediately: bool = True,
         max_retries: int = 3,
         timeout_seconds: Optional[int] = None,
         enabled: bool = True,
+        schedule_type: ScheduleType = ScheduleType.INTERVAL,
+        daily_hour_utc: int = 0,
+        daily_minute_utc: int = 0,
     ):
         """
         Register a pipeline job with the scheduler.
@@ -128,15 +143,21 @@ class PipelineScheduler:
         Args:
             name: Unique job identifier
             callback: Async function to execute (should return metrics dict)
-            interval_seconds: How often to run
+            interval_seconds: How often to run (for INTERVAL schedule type)
             run_immediately: Run once immediately on start
             max_retries: Retry count on failure
             timeout_seconds: Maximum execution time
             enabled: Whether job is active
+            schedule_type: INTERVAL (every X seconds) or DAILY (at specific time)
+            daily_hour_utc: Hour to run (0-23 UTC) for DAILY schedule
+            daily_minute_utc: Minute to run (0-59) for DAILY schedule
         """
         config = JobConfig(
             name=name,
             interval_seconds=interval_seconds,
+            schedule_type=schedule_type,
+            daily_hour_utc=daily_hour_utc,
+            daily_minute_utc=daily_minute_utc,
             run_immediately=run_immediately,
             max_retries=max_retries,
             timeout_seconds=timeout_seconds,
@@ -146,7 +167,10 @@ class PipelineScheduler:
         self.jobs[name] = JobState(config=config)
         self.callbacks[name] = callback
         
-        logger.info(f"Registered job: {name} (interval: {interval_seconds}s)")
+        if schedule_type == ScheduleType.DAILY:
+            logger.info(f"Registered job: {name} (daily at {daily_hour_utc:02d}:{daily_minute_utc:02d} UTC)")
+        else:
+            logger.info(f"Registered job: {name} (interval: {interval_seconds}s)")
     
     def enable_job(self, name: str):
         """Enable a disabled job."""
@@ -217,11 +241,44 @@ class PipelineScheduler:
         """Wait for the scheduler to stop (blocks until shutdown)."""
         await self._shutdown_event.wait()
     
+    def _calculate_seconds_until_daily_run(self, config: JobConfig) -> float:
+        """
+        Calculate seconds until next daily run time.
+        
+        Args:
+            config: Job configuration with daily_hour_utc and daily_minute_utc
+            
+        Returns:
+            Seconds until the next scheduled run
+        """
+        now = datetime.utcnow()
+        next_run = now.replace(
+            hour=config.daily_hour_utc,
+            minute=config.daily_minute_utc,
+            second=0,
+            microsecond=0
+        )
+        
+        # If we've passed today's run time, schedule for tomorrow
+        # Use > to ensure we run if we're exactly at the scheduled time
+        if now > next_run:
+            next_run = next_run + timedelta(days=1)
+        
+        seconds_until_run = (next_run - now).total_seconds()
+        
+        # Handle edge case where seconds could be 0 or negative
+        if seconds_until_run < 0:
+            seconds_until_run = 0
+            
+        logger.info(f"Next daily run: {next_run.strftime('%Y-%m-%d %H:%M:%S')} UTC ({seconds_until_run/3600:.1f} hours)")
+        return seconds_until_run
+    
     async def _run_job_loop(self, name: str):
         """
         Main loop for a single job.
         
         Handles scheduling, execution, and error recovery for one job.
+        Supports both interval-based and daily time-based scheduling.
         """
         state = self.jobs[name]
         callback = self.callbacks[name]
@@ -234,14 +291,27 @@ class PipelineScheduler:
         # Main scheduling loop
         while self._running and config.enabled:
             try:
-                # Wait for next interval
-                await asyncio.sleep(config.interval_seconds)
+                # Calculate wait time based on schedule type
+                if config.schedule_type == ScheduleType.DAILY:
+                    # Daily schedule: wait until specific time
+                    wait_seconds = self._calculate_seconds_until_daily_run(config)
+                else:
+                    # Interval schedule: wait for fixed interval
+                    wait_seconds = config.interval_seconds
+                
+                # Wait for next run
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
                 
                 if not self._running or not config.enabled:
                     break
                 
                 # Execute job
                 await self._execute_job(name, state, callback)
+                
+                # For daily jobs, add a small delay to prevent running twice
+                if config.schedule_type == ScheduleType.DAILY:
+                    await asyncio.sleep(61)  # Move past the scheduled minute
                 
             except asyncio.CancelledError:
                 logger.debug(f"Job {name} cancelled")
@@ -331,10 +401,10 @@ class PipelineScheduler:
         """
         job_statuses = {}
         for name, state in self.jobs.items():
-            job_statuses[name] = {
+            job_info = {
                 "status": state.status.value,
                 "enabled": state.config.enabled,
-                "interval_seconds": state.config.interval_seconds,
+                "schedule_type": state.config.schedule_type.value,
                 "last_run": state.last_run.isoformat() if state.last_run else None,
                 "last_success": state.last_success.isoformat() if state.last_success else None,
                 "last_error": state.last_error,
@@ -343,6 +413,12 @@ class PipelineScheduler:
                 "failure_count": state.failure_count,
                 "consecutive_failures": state.consecutive_failures,
             }
+            # Add schedule-specific info
+            if state.config.schedule_type == ScheduleType.INTERVAL:
+                job_info["interval_seconds"] = state.config.interval_seconds
+            else:
+                job_info["daily_time_utc"] = f"{state.config.daily_hour_utc:02d}:{state.config.daily_minute_utc:02d}"
+            job_statuses[name] = job_info
         
         return {
             "running": self._running,

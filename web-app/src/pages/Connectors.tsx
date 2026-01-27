@@ -34,6 +34,20 @@ interface LLMConnectorStatus {
  * - Summary statistics
  * - Last updated timestamp
  */
+// Crawler Service Status type
+interface CrawlerServiceStatus {
+  status: 'connected' | 'error' | 'unknown'
+  lastRunAt: string | null
+  articlesFound?: number
+  articlesNew?: number
+  totalLosersFound?: number
+  bigCapLosersFound?: number
+  overThresholdFound?: number
+  durationSeconds: number | null
+  errorMessage: string | null
+  enabled: boolean
+}
+
 export default function Connectors() {
   const [connectors, setConnectors] = useState<ConnectorStatus[]>([])
   const [llmConnectors, setLlmConnectors] = useState<LLMConnectorStatus[]>([])
@@ -47,6 +61,16 @@ export default function Connectors() {
   const [llmLastUpdated, setLlmLastUpdated] = useState<string | null>(null)
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
   const [llmRefreshMessage, setLlmRefreshMessage] = useState<string | null>(null)
+  
+  // Crawler services state
+  const [jimCramerService, setJimCramerService] = useState<CrawlerServiceStatus | null>(null)
+  const [bigCapLosersService, setBigCapLosersService] = useState<CrawlerServiceStatus | null>(null)
+  const [jimCramerEnabled, setJimCramerEnabled] = useState(true)
+  const [bigCapLosersEnabled, setBigCapLosersEnabled] = useState(true)
+  const [isRefreshingJimCramer, setIsRefreshingJimCramer] = useState(false)
+  const [isRefreshingBigCapLosers, setIsRefreshingBigCapLosers] = useState(false)
+  const [jimCramerRefreshMessage, setJimCramerRefreshMessage] = useState<string | null>(null)
+  const [bigCapLosersRefreshMessage, setBigCapLosersRefreshMessage] = useState<string | null>(null)
 
   // Default connectors list (fallback when API is unavailable)
   // When API is connected, this is replaced with real data from the database
@@ -98,6 +122,20 @@ export default function Connectors() {
         setLlmConnectors(defaultLLMConnectors)
       }
       
+      // Load crawler services status
+      try {
+        const crawlerResponse = await fetch('/api/v1/crawler-services/status')
+        if (crawlerResponse.ok) {
+          const data = await crawlerResponse.json()
+          setJimCramerService(data.jimCramerService)
+          setBigCapLosersService(data.bigCapLosersService)
+          setJimCramerEnabled(data.jimCramerService?.enabled ?? true)
+          setBigCapLosersEnabled(data.bigCapLosersService?.enabled ?? true)
+        }
+      } catch (err) {
+        console.error('Error loading crawler services status:', err)
+      }
+      
     } finally {
       setIsLoading(false)
     }
@@ -135,6 +173,81 @@ export default function Connectors() {
       setLlmHealthCheckEnabled(newValue)
     } catch (err) {
       console.error('Failed to update LLM health check setting:', err)
+    }
+  }
+
+  // Crawler services handlers
+  const handleJimCramerToggle = async () => {
+    const newValue = !jimCramerEnabled
+    try {
+      await fetch('/api/v1/crawler-services/settings/jim_cramer_service', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newValue })
+      })
+      setJimCramerEnabled(newValue)
+    } catch (err) {
+      console.error('Failed to update Jim Cramer service setting:', err)
+    }
+  }
+
+  const handleBigCapLosersToggle = async () => {
+    const newValue = !bigCapLosersEnabled
+    try {
+      await fetch('/api/v1/crawler-services/settings/big_cap_losers_service', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newValue })
+      })
+      setBigCapLosersEnabled(newValue)
+    } catch (err) {
+      console.error('Failed to update Big Cap Losers service setting:', err)
+    }
+  }
+
+  const handleJimCramerRun = async () => {
+    try {
+      setIsRefreshingJimCramer(true)
+      setJimCramerRefreshMessage('Starting Jim Cramer service...')
+      const response = await fetch('/api/v1/crawler-services/jim-cramer/run', { method: 'POST' })
+      const data = await response.json()
+      setJimCramerRefreshMessage(data.message)
+      // Reload status after a delay
+      setTimeout(() => loadConnectorStatus(), 5000)
+      setTimeout(() => {
+        setIsRefreshingJimCramer(false)
+        setJimCramerRefreshMessage(null)
+      }, 30000)
+    } catch (err) {
+      console.error('Error triggering Jim Cramer service:', err)
+      setJimCramerRefreshMessage('Failed to trigger service')
+      setTimeout(() => {
+        setIsRefreshingJimCramer(false)
+        setJimCramerRefreshMessage(null)
+      }, 5000)
+    }
+  }
+
+  const handleBigCapLosersRun = async () => {
+    try {
+      setIsRefreshingBigCapLosers(true)
+      setBigCapLosersRefreshMessage('Starting Big Cap Losers service...')
+      const response = await fetch('/api/v1/crawler-services/big-cap-losers/run', { method: 'POST' })
+      const data = await response.json()
+      setBigCapLosersRefreshMessage(data.message)
+      // Reload status after a delay
+      setTimeout(() => loadConnectorStatus(), 5000)
+      setTimeout(() => {
+        setIsRefreshingBigCapLosers(false)
+        setBigCapLosersRefreshMessage(null)
+      }, 30000)
+    } catch (err) {
+      console.error('Error triggering Big Cap Losers service:', err)
+      setBigCapLosersRefreshMessage('Failed to trigger service')
+      setTimeout(() => {
+        setIsRefreshingBigCapLosers(false)
+        setBigCapLosersRefreshMessage(null)
+      }, 5000)
     }
   }
 
@@ -780,6 +893,453 @@ export default function Connectors() {
                 <span className="inline-flex items-center gap-1 text-xs text-purple-800 bg-purple-100 px-2 py-1 rounded">
                   <span className="w-5 h-5 rounded-full bg-green-200 text-green-700 flex items-center justify-center text-xs font-bold">3</span>
                   Groq (Free Fallback)
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Jim Cramer Service Section */}
+        <div className="mt-12 bg-white rounded-xl shadow-sm border overflow-hidden">
+          <div className="bg-gradient-to-r from-orange-500 to-amber-500 px-6 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">📺</span>
+                <div>
+                  <h2 className="text-xl font-bold text-white">Jim Cramer Service</h2>
+                  <p className="text-orange-100 text-sm">Daily news crawling and AI analysis of Jim Cramer's stock recommendations</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                {/* Health Check Toggle */}
+                <div className="flex items-center gap-2">
+                  <span className="text-white text-sm">Enabled</span>
+                  <button
+                    onClick={handleJimCramerToggle}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      jimCramerEnabled ? 'bg-green-500' : 'bg-gray-400'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        jimCramerEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+                {/* Run Button */}
+                <button
+                  onClick={handleJimCramerRun}
+                  disabled={isRefreshingJimCramer || !jimCramerEnabled}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    isRefreshingJimCramer || !jimCramerEnabled
+                      ? 'bg-orange-300 cursor-not-allowed text-orange-100'
+                      : 'bg-white text-orange-600 hover:bg-orange-50'
+                  }`}
+                >
+                  {isRefreshingJimCramer ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Running...
+                    </span>
+                  ) : (
+                    'Run Now'
+                  )}
+                </button>
+              </div>
+            </div>
+            {/* Refresh Message */}
+            {jimCramerRefreshMessage && (
+              <div className="mt-2 text-orange-100 text-sm">{jimCramerRefreshMessage}</div>
+            )}
+            {/* Last Run Info */}
+            {jimCramerService?.lastRunAt && (
+              <div className="mt-2 text-orange-100 text-xs">
+                Last run: {new Date(jimCramerService.lastRunAt).toLocaleString()} • 
+                {jimCramerService.articlesFound} articles found • 
+                Status: <span className={jimCramerService.status === 'connected' ? 'text-green-200' : 'text-red-200'}>
+                  {jimCramerService.status === 'connected' ? 'Success' : 'Error'}
+                </span>
+              </div>
+            )}
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Source
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Type
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Description
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {/* CNBC Mad Money RSS */}
+                <tr className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
+                        <span className="text-white font-bold text-sm">NBC</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">CNBC Mad Money</p>
+                        <p className="text-xs text-gray-500">cnbc_mad_money_rss</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                      RSS Feed
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Mad Money show clips and articles</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+                
+                {/* CNBC Investing Club */}
+                <tr className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
+                        <span className="text-white font-bold text-sm">NBC</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">CNBC Investing Club</p>
+                        <p className="text-xs text-gray-500">cnbc_investing_club</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                      Web Crawl
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Cramer's premium stock picks and analysis</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+                
+                {/* CNBC Search API */}
+                <tr className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
+                        <span className="text-white font-bold text-sm">NBC</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">CNBC Search API</p>
+                        <p className="text-xs text-gray-500">cnbc_api</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                      API
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Search for Jim Cramer mentions across CNBC</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+                
+                {/* Google News RSS */}
+                <tr className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-yellow-500 flex items-center justify-center">
+                        <span className="text-white font-bold text-sm">G</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">Google News</p>
+                        <p className="text-xs text-gray-500">google_news_cramer</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                      RSS Feed
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Aggregated news mentioning Jim Cramer</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+                
+                {/* LLM Analysis */}
+                <tr className="hover:bg-gray-50 bg-orange-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-orange-500 to-amber-500 flex items-center justify-center">
+                        <span className="text-white text-lg">🤖</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">LLM Stock Extraction</p>
+                        <p className="text-xs text-gray-500">groq_llama_3.1</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                      AI Analysis
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Extracts stock tickers, sentiment, and recommendations using Groq</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+                
+                {/* Daily Summary */}
+                <tr className="hover:bg-gray-50 bg-orange-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-orange-500 to-amber-500 flex items-center justify-center">
+                        <span className="text-white text-lg">📊</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">Daily Summary Generator</p>
+                        <p className="text-xs text-gray-500">daily_summary</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                      AI Analysis
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Generates daily summary with bullish/bearish picks</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Jim Cramer Info Card */}
+        <div className="mt-8 bg-orange-50 rounded-xl border border-orange-200 p-6">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center flex-shrink-0">
+              <span className="text-xl">📺</span>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-orange-900">About Jim Cramer Service</h3>
+              <p className="text-sm text-orange-700 mt-1">
+                This service crawls multiple news sources daily at 9:00 AM PST to find Jim Cramer's latest stock recommendations.
+                Articles are analyzed using Groq's Llama 3.1 model to extract stock tickers, sentiment (bullish/bearish/neutral),
+                and specific recommendations. A daily summary is generated with top picks.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-1 text-xs text-orange-800 bg-orange-100 px-2 py-1 rounded">
+                  🕘 Runs at 9 AM PST
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-orange-800 bg-orange-100 px-2 py-1 rounded">
+                  📰 4 News Sources
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-orange-800 bg-orange-100 px-2 py-1 rounded">
+                  🤖 Groq AI Analysis
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-orange-800 bg-orange-100 px-2 py-1 rounded">
+                  📊 Daily Summaries
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Big Cap Losers Service Section */}
+        <div className="mt-12 bg-white rounded-xl shadow-sm border overflow-hidden">
+          <div className="bg-gradient-to-r from-red-500 to-rose-500 px-6 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">📉</span>
+                <div>
+                  <h2 className="text-xl font-bold text-white">Big Cap Losers Service</h2>
+                  <p className="text-red-100 text-sm">Tracks large-cap stocks (&gt;$1B) with significant daily drops (&gt;10%) • Runs every 1 hour</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                {/* Health Check Toggle */}
+                <div className="flex items-center gap-2">
+                  <span className="text-white text-sm">Enabled</span>
+                  <button
+                    onClick={handleBigCapLosersToggle}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      bigCapLosersEnabled ? 'bg-green-500' : 'bg-gray-400'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        bigCapLosersEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+                {/* Run Button */}
+                <button
+                  onClick={handleBigCapLosersRun}
+                  disabled={isRefreshingBigCapLosers || !bigCapLosersEnabled}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    isRefreshingBigCapLosers || !bigCapLosersEnabled
+                      ? 'bg-red-300 cursor-not-allowed text-red-100'
+                      : 'bg-white text-red-600 hover:bg-red-50'
+                  }`}
+                >
+                  {isRefreshingBigCapLosers ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Running...
+                    </span>
+                  ) : (
+                    'Run Now'
+                  )}
+                </button>
+              </div>
+            </div>
+            {/* Refresh Message */}
+            {bigCapLosersRefreshMessage && (
+              <div className="mt-2 text-red-100 text-sm">{bigCapLosersRefreshMessage}</div>
+            )}
+            {/* Last Run Info */}
+            {bigCapLosersService?.lastRunAt && (
+              <div className="mt-2 text-red-100 text-xs">
+                Last run: {new Date(bigCapLosersService.lastRunAt).toLocaleString()} • 
+                {bigCapLosersService.bigCapLosersFound} losers found ({bigCapLosersService.overThresholdFound} over 10%) • 
+                Status: <span className={bigCapLosersService.status === 'connected' ? 'text-green-200' : 'text-red-200'}>
+                  {bigCapLosersService.status === 'connected' ? 'Success' : 'Error'}
+                </span>
+              </div>
+            )}
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Source
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Type
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Description
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {/* Yahoo Finance Losers */}
+                <tr className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center">
+                        <span className="text-white font-bold text-sm">Y!</span>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">Yahoo Finance Losers</p>
+                        <p className="text-xs text-gray-500">yahoo_finance_losers</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                      Web Scraper
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <p className="text-sm text-gray-600">Daily stock losers page from Yahoo Finance</p>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                      <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                      Active
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Big Cap Losers Info Card */}
+        <div className="mt-8 bg-red-50 rounded-xl border border-red-200 p-6">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center flex-shrink-0">
+              <span className="text-xl">📉</span>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-red-900">About Big Cap Losers Service</h3>
+              <p className="text-sm text-red-700 mt-1">
+                This service crawls Yahoo Finance's losers page every 1 hour to identify large-cap stocks (market cap &gt; $1B)
+                that have experienced significant daily drops. Stocks falling more than 10% are flagged for attention.
+                This helps identify potential buying opportunities or warning signs in major companies.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-1 text-xs text-red-800 bg-red-100 px-2 py-1 rounded">
+                  ⏰ Runs Every 1 Hour
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-red-800 bg-red-100 px-2 py-1 rounded">
+                  💰 Market Cap &gt; $1B
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-red-800 bg-red-100 px-2 py-1 rounded">
+                  🔴 Alerts at &gt;10% Drop
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-red-800 bg-red-100 px-2 py-1 rounded">
+                  📊 Historical Tracking
                 </span>
               </div>
             </div>

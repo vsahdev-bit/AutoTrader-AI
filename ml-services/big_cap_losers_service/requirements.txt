@@ -1,0 +1,14 @@
+# Big Cap Losers Service Dependencies
+
+# HTTP client
+aiohttp>=3.9.0
+
+# Database
+asyncpg>=0.29.0
+
+# HTML Parsing
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# Utilities
+python-dateutil>=2.8.0

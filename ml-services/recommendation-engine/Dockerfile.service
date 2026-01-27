@@ -1,5 +1,5 @@
 # Recommendation Engine Service Dockerfile
-# Runs the recommendation flow service on a 2-hour schedule
+# Runs the recommendation flow service at fixed times (7:30 AM and 12:00 PM PST daily)
 # Build context: project root (../../ from infrastructure/docker)
 
 FROM python:3.11-slim
