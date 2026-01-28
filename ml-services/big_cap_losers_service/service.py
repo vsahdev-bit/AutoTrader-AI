@@ -302,7 +302,11 @@ class BigCapLosersService:
         Per spec, failures are tolerated per-symbol and recorded in recommendation_error.
         """
         import aiohttp
-        from .recommender import fetch_recommendation, map_recommendation_to_row
+        try:
+            from .recommender import fetch_recommendation, map_recommendation_to_row
+        except ImportError:
+            # When executed as a script (python service.py), relative imports are not available.
+            from recommender import fetch_recommendation, map_recommendation_to_row
 
         if not loser_rows:
             return 0
