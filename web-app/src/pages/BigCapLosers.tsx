@@ -808,6 +808,8 @@ export default function BigCapLosers() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'all' | 'over10'>('over10')
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  // The freshness of the underlying dataset (derived from returned rows)
+  const [dataTimestamp, setDataTimestamp] = useState<Date | null>(null)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
   const [prevOver10Count, setPrevOver10Count] = useState<number>(0)
   const [selectedLoser, setSelectedLoser] = useState<BigCapLoser | null>(null)
@@ -860,6 +862,18 @@ export default function BigCapLosers() {
     }
   }
 
+  const computeDataTimestamp = (rows: BigCapLoser[]): Date | null => {
+    // `crawled_at` comes back as an ISO string. Use the newest value as the dataset timestamp.
+    let max: Date | null = null
+    for (const r of rows) {
+      if (!r?.crawled_at) continue
+      const d = new Date(r.crawled_at)
+      if (Number.isNaN(d.getTime())) continue
+      if (!max || d.getTime() > max.getTime()) max = d
+    }
+    return max
+  }
+
   const loadData = async () => {
     setLoading(true)
     const [losersData, over10Data, summaryData] = await Promise.all([
@@ -875,6 +889,7 @@ export default function BigCapLosers() {
     setOver10Losers(over10Data)
     setPrevOver10Count(over10Data.length)
     setSummary(summaryData)
+    setDataTimestamp(computeDataTimestamp(losersData))
     setLastUpdated(new Date())
     setLoading(false)
     
@@ -937,6 +952,7 @@ export default function BigCapLosers() {
         setOver10Losers(over10Data)
         setPrevOver10Count(over10Data.length)
         setSummary(summaryData)
+        setDataTimestamp(computeDataTimestamp(losersData))
         setLastUpdated(new Date())
         
         // Show completion message with stats
@@ -1146,12 +1162,22 @@ export default function BigCapLosers() {
         )}
 
         {/* Last Updated */}
-        {lastUpdated && (
-          <div className="flex items-center gap-2 text-sm text-gray-500 mb-6">
-            <ClockIcon className="w-4 h-4" />
-            Last updated: {lastUpdated.toLocaleTimeString()}
+        {(lastUpdated || dataTimestamp) && (
+          <div className="text-sm text-gray-500 mb-6 flex flex-col sm:flex-row sm:items-center sm:gap-6 gap-1">
+            {lastUpdated && (
+              <div className="flex items-center gap-2">
+                <ClockIcon className="w-4 h-4" />
+                Last updated: {lastUpdated.toLocaleTimeString()}
+              </div>
+            )}
+            {dataTimestamp && (
+              <div className="flex items-center gap-2">
+                <InformationCircleIcon className="w-4 h-4" />
+                Data timestamp: {dataTimestamp.toLocaleString()}
+              </div>
+            )}
           </div>
-        )}
+        )
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
