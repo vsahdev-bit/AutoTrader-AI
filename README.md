@@ -79,32 +79,18 @@ autotrader-ai/
 git clone https://github.com/YOUR_USERNAME/autotrader-ai.git
 cd autotrader-ai
 
-# Start infrastructure (Kafka, PostgreSQL, Redis, ClickHouse)
-docker-compose -f infrastructure/docker/docker-compose.yml up -d
+# Start the full local stack (Docker Compose)
+make start
 
-# Run database migrations
+# (Optional) run migrations manually if needed
 cd database/postgres && ./migrate.sh
-
-# Start backend services
-cd services
-./mvnw spring-boot:run -pl auth-service
-./mvnw spring-boot:run -pl config-service
-./mvnw spring-boot:run -pl recommendation-service
-./mvnw spring-boot:run -pl trade-execution-service
-
-# Start ML services
-cd ml-services
-pip install -r requirements.txt
-python -m feature_engineering.main &
-python -m recommendation_engine.main &
-
-# Start frontend
-cd web-app
-npm install
-npm run dev
 ```
 
 Access the application at: http://localhost:5173
+
+Useful health checks:
+- API Gateway: http://localhost:3001/health
+- Recommendation Engine: http://localhost:8000/health
 
 ## 🔒 Security & Compliance
 

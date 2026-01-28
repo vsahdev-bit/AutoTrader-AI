@@ -165,7 +165,7 @@ make install
 make test
 
 # View logs
-docker-compose logs -f postgres
+docker compose -f infrastructure/docker/docker-compose.yml logs -f postgres
 
 # Database access
 psql -h localhost -U autotrader -d autotrader
@@ -232,15 +232,15 @@ docker ps
 make stop && make start
 
 # Check logs
-docker-compose logs
+docker compose -f infrastructure/docker/docker-compose.yml logs
 ```
 
 ### Port conflicts
 ```bash
 # Check what's using a port
 lsof -i :5432  # PostgreSQL
-lsof -i :8081  # Auth service
-lsof -i :5173  # Frontend
+lsof -i :3001  # API gateway
+lsof -i :5173  # Web app
 ```
 
 ### Database issues

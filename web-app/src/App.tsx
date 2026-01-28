@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard'
 import Home from './pages/Home'
 import Onboarding from './pages/Onboarding'
 import StockRecommendations from './pages/StockRecommendations'
+import GetRecommendation from './pages/GetRecommendation'
 import Connectors from './pages/Connectors'
 import JimCramerAdvice from './pages/JimCramerAdvice'
 import BigCapLosers from './pages/BigCapLosers'
@@ -80,6 +81,9 @@ function AppRoutes() {
         {/* Stock Recommendations - public route for viewing recommendation history */}
         <Route path="/recommendations" element={<StockRecommendations />} />
         <Route path="/recommendations/:symbol" element={<StockRecommendations />} />
+        
+        {/* Get Recommendation - on-demand recommendation for any stock */}
+        <Route path="/get-recommendation" element={<GetRecommendation />} />
         
         {/* Connectors - public route for viewing data connector status */}
         <Route path="/connectors" element={<Connectors />} />

@@ -3,18 +3,16 @@
 StartUpApplication - Complete Application Startup Script
 =========================================================
 
-This script orchestrates the complete startup of the AutoTrader application:
-1. Starts all Docker containers (databases, services)
-2. Verifies and fixes service connectivity issues
-3. Tests all data connectors (Polygon, NewsAPI, Finnhub, etc.)
-4. Tests all LLM connectors (OpenAI, Anthropic, Groq)
-5. Runs News Sentiment Service to fetch and analyze news
-6. Runs recommendations for all watchlist symbols
-7. Starts Jim Cramer Service (daily at 9 AM PST, with GROQ API key from Vault)
-8. Starts Big Cap Losers Service (HTTP server on port 8001, hourly crawls)
-9. Starts API Gateway (port 3001)
-10. Starts Frontend Web App (Vite dev server on port 5173)
-11. Signals UI to refresh and display new data
+This script orchestrates local startup of the AutoTrader AI stack (intended for bootstrapping a new machine):
+1. (Optional) Clone or update the Git repository
+2. Start the Docker Compose stack (infrastructure + web-app + api-gateway + ML services)
+3. Run PostgreSQL migrations
+4. Run basic smoke tests (API Gateway / Recommendation Engine / Web App)
+
+Notes:
+- The authoritative local stack is defined in infrastructure/docker/docker-compose.yml.
+- Some optional services (e.g., Jim Cramer / Big Cap Losers) may require API keys via environment variables.
+- Connector/API key checks are optional and can be skipped with --skip-tests.
 
 Usage:
     python scripts/StartUpApplication.py
@@ -65,6 +63,23 @@ class StepResult:
     sub_results: List['StepResult'] = field(default_factory=list)
 
 
+def _run(cmd: List[str], cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None, timeout: int = 120) -> subprocess.CompletedProcess:
+    """Run a command with good defaults."""
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, env=env, timeout=timeout)
+
+
+def _which(cmd: str) -> bool:
+    return subprocess.run(["bash", "-lc", f"command -v {cmd}"], capture_output=True, text=True).returncode == 0
+
+
+def _is_git_repo(path: str) -> bool:
+    return os.path.isdir(os.path.join(path, ".git"))
+
+
+def _repo_looks_like_autotrader(path: str) -> bool:
+    return os.path.exists(os.path.join(path, "infrastructure", "docker", "docker-compose.yml")) and os.path.exists(os.path.join(path, "web-app"))
+
+
 class StartUpApplication:
     """Main startup orchestrator."""
     
@@ -74,14 +89,23 @@ class StartUpApplication:
         "NVDA", "TSLA", "JPM", "V", "JNJ"
     ]
     
-    # Docker services to start
+    # Docker services to check. These should align with infrastructure/docker/docker-compose.yml
+    # NOTE: We treat these as "must be running" for a healthy local environment.
     DOCKER_SERVICES = [
         "postgres",
-        "clickhouse", 
-        "vault",
         "redis",
         "kafka",
         "zookeeper",
+        "clickhouse",
+        "vault",
+        "api-gateway",
+        "recommendation-engine",
+        "web-app",
+        "news-ingestion",
+        "connector-health",
+        # Optional (started conditionally / best-effort)
+        "jim-cramer-service",
+        "big-cap-losers-service",
     ]
     
     # Data connectors to test
@@ -108,12 +132,24 @@ class StartUpApplication:
         skip_tests: bool = False,
         skip_news: bool = False,
         verbose: bool = True,
+        repo_url: Optional[str] = None,
+        branch: str = "main",
+        target_dir: Optional[str] = None,
+        fresh_clone: bool = False,
+        skip_build: bool = False,
+        prune_docker: bool = False,
     ):
         self.watchlist = watchlist or self.DEFAULT_WATCHLIST
         self.skip_docker = skip_docker
         self.skip_tests = skip_tests
         self.skip_news = skip_news
         self.verbose = verbose
+        self.repo_url = repo_url
+        self.branch = branch
+        self.target_dir = target_dir
+        self.fresh_clone = fresh_clone
+        self.skip_build = skip_build
+        self.prune_docker = prune_docker
         self.results: List[StepResult] = []
         self.start_time = None
         
@@ -138,6 +174,83 @@ class StartUpApplication:
         print(f"📌 Step {step_num}/{total}: {name}")
         print(f"{'─' * 70}")
     
+    # =========================================================================
+    # STEP 0: Prepare Repo (clone/pull)
+    # =========================================================================
+
+    async def step0_prepare_repo(self) -> StepResult:
+        """Optional: clone/pull repo for fresh machine bootstrap."""
+        start = time.time()
+
+        if not self.repo_url:
+            return StepResult(
+                name="Prepare Repo",
+                status=StepStatus.SKIPPED,
+                message="No repo URL provided (assuming already in repo)",
+                duration_seconds=time.time() - start,
+            )
+
+        if not _which('git'):
+            return StepResult(
+                name="Prepare Repo",
+                status=StepStatus.FAILED,
+                message="git is not installed (required for --repo-url)",
+                duration_seconds=time.time() - start,
+            )
+
+        target = self.target_dir or os.path.join(os.path.expanduser('~'), 'autotrader-ai')
+
+        try:
+            # If we're already in the target and it looks correct, just pull.
+            if _is_git_repo(target) and _repo_looks_like_autotrader(target) and not self.fresh_clone:
+                self.log(f"Updating existing repo at {target}...")
+                _run(["git", "fetch", "--all"], cwd=target, timeout=120)
+                _run(["git", "checkout", self.branch], cwd=target, timeout=60)
+                _run(["git", "pull"], cwd=target, timeout=120)
+                return StepResult(
+                    name="Prepare Repo",
+                    status=StepStatus.SUCCESS,
+                    message=f"Updated repo in {target} (branch: {self.branch})",
+                    duration_seconds=time.time() - start,
+                )
+
+            # Fresh clone
+            if os.path.exists(target) and self.fresh_clone:
+                return StepResult(
+                    name="Prepare Repo",
+                    status=StepStatus.FAILED,
+                    message=f"Target dir exists but --fresh-clone specified: {target} (please remove it)",
+                    duration_seconds=time.time() - start,
+                )
+
+            self.log(f"Cloning repo from {self.repo_url} into {target}...")
+            _run(["git", "clone", "--branch", self.branch, self.repo_url, target], timeout=300)
+
+            return StepResult(
+                name="Prepare Repo",
+                status=StepStatus.SUCCESS,
+                message=f"Cloned repo to {target} (branch: {self.branch})",
+                duration_seconds=time.time() - start,
+                details=[
+                    "NOTE: If you ran this script from a different directory, re-run it from inside the cloned repo:",
+                    f"  cd {target} && python3 scripts/StartUpApplication.py",
+                ],
+            )
+        except subprocess.TimeoutExpired:
+            return StepResult(
+                name="Prepare Repo",
+                status=StepStatus.FAILED,
+                message="git operation timed out",
+                duration_seconds=time.time() - start,
+            )
+        except Exception as e:
+            return StepResult(
+                name="Prepare Repo",
+                status=StepStatus.FAILED,
+                message=str(e)[:80],
+                duration_seconds=time.time() - start,
+            )
+
     # =========================================================================
     # STEP 1: Start Docker Containers
     # =========================================================================
@@ -180,13 +293,41 @@ class StartUpApplication:
                 duration_seconds=time.time() - start,
             )
         
-        # Start docker-compose
+        # Start docker compose stack
+        # Prefer `docker compose` (plugin) but fall back to legacy `docker-compose`.
         docker_compose_path = os.path.join(PROJECT_ROOT, "infrastructure", "docker", "docker-compose.yml")
         
         try:
-            self.log("Running docker-compose up -d...")
+            # Optional: free disk space proactively (helps on fresh machines)
+            if self.prune_docker:
+                self.log("Pruning unused Docker data (docker system prune -f)...")
+                try:
+                    _run(["docker", "system", "prune", "-f"], timeout=600)
+                except Exception as e:
+                    self.log(f"  ⚠️ docker prune failed: {e}")
+
+            compose_bin = "docker-compose"
+            if _which("docker"):
+                # `docker compose` is preferred on newer installs
+                try:
+                    probe = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, timeout=5)
+                    if probe.returncode == 0:
+                        compose_bin = "docker"
+                except Exception:
+                    pass
+
+            up_cmd = [compose_bin]
+            if compose_bin == "docker":
+                up_cmd += ["compose", "-f", docker_compose_path, "up", "-d"]
+            else:
+                up_cmd += ["-f", docker_compose_path, "up", "-d"]
+            if not self.skip_build:
+                # Ensure changes are built (recommendation-engine, api-gateway, web-app)
+                up_cmd.append("--build")
+
+            self.log(f"Running {' '.join(up_cmd)}...")
             result = subprocess.run(
-                ["docker-compose", "-f", docker_compose_path, "up", "-d"],
+                up_cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -210,12 +351,15 @@ class StartUpApplication:
                 duration_seconds=time.time() - start,
             )
         
-        # Wait for containers to be healthy
+        # Wait for containers to start and become healthy
         await asyncio.sleep(5)
-        
-        # Check each service
+
+        # Check each service (best-effort; some are optional)
         for service in self.DOCKER_SERVICES:
             status, msg = await self._check_docker_service(service)
+            if service in ("jim-cramer-service", "big-cap-losers-service") and status == StepStatus.FAILED:
+                status = StepStatus.SKIPPED
+                msg = "Optional service not running"
             sub_results.append(StepResult(
                 name=service,
                 status=status,
@@ -259,6 +403,54 @@ class StartUpApplication:
         except Exception as e:
             return StepStatus.FAILED, str(e)
     
+    # =========================================================================
+    # STEP 1.5: Run DB Migrations (Postgres)
+    # =========================================================================
+
+    async def step1_5_run_db_migrations(self) -> StepResult:
+        start = time.time()
+
+        migrate_script = os.path.join(PROJECT_ROOT, "database", "postgres", "migrate.sh")
+        if not os.path.exists(migrate_script):
+            return StepResult(
+                name="Run DB Migrations",
+                status=StepStatus.WARNING,
+                message="Migration script not found (skipping)",
+                duration_seconds=time.time() - start,
+            )
+
+        try:
+            self.log("Running PostgreSQL migrations...")
+            result = _run(["bash", migrate_script], cwd=os.path.dirname(migrate_script), timeout=300)
+            if result.returncode != 0:
+                return StepResult(
+                    name="Run DB Migrations",
+                    status=StepStatus.WARNING,
+                    message=f"Migrations returned non-zero exit code: {result.returncode}",
+                    duration_seconds=time.time() - start,
+                    details=[result.stdout[-500:], result.stderr[-500:]],
+                )
+            return StepResult(
+                name="Run DB Migrations",
+                status=StepStatus.SUCCESS,
+                message="Migrations applied",
+                duration_seconds=time.time() - start,
+            )
+        except subprocess.TimeoutExpired:
+            return StepResult(
+                name="Run DB Migrations",
+                status=StepStatus.FAILED,
+                message="Migration timed out",
+                duration_seconds=time.time() - start,
+            )
+        except Exception as e:
+            return StepResult(
+                name="Run DB Migrations",
+                status=StepStatus.FAILED,
+                message=str(e)[:80],
+                duration_seconds=time.time() - start,
+            )
+
     # =========================================================================
     # STEP 2: Verify and Fix Services
     # =========================================================================
@@ -609,7 +801,11 @@ class StartUpApplication:
     # =========================================================================
     
     async def step5_run_recommendations(self) -> StepResult:
-        """Run recommendations for all watchlist symbols."""
+        """(Optional) Run recommendations for all watchlist symbols.
+
+        NOTE: For fresh machine bootstrap, prefer using the running recommendation-engine HTTP API.
+        This avoids needing local Python deps to import the engine.
+        """
         start = time.time()
         sub_results = []
         recommendations = []
@@ -623,44 +819,47 @@ class StartUpApplication:
         os.environ['CLICKHOUSE_PASSWORD'] = 'clickhouse_dev_pass'
         
         try:
-            # Import recommendation engine
-            rec_engine_path = os.path.join(PROJECT_ROOT, 'ml-services', 'recommendation-engine', 'src')
-            sys.path.insert(0, rec_engine_path)
-            from main import get_engine
-            
-            engine = await get_engine()
-            
-            for symbol in self.watchlist:
-                try:
-                    self.log(f"  Generating recommendation for {symbol}...")
-                    rec = await engine.generate_recommendation(symbol=symbol, include_features=True)
-                    
-                    # Store full recommendation object for database
-                    recommendations.append(rec)
-                    
-                    sub_results.append(StepResult(
-                        name=symbol,
-                        status=StepStatus.SUCCESS,
-                        message=f"{rec.action} (score: {rec.score:.2f}, conf: {rec.confidence:.1%})",
-                    ))
-                    self.log(f"    ✅ {symbol}: {rec.action} (score: {rec.score:.2f})")
-                    
-                except Exception as e:
-                    sub_results.append(StepResult(
-                        name=symbol,
-                        status=StepStatus.FAILED,
-                        message=str(e)[:50],
-                    ))
-                    self.log(f"    ❌ {symbol}: {str(e)[:50]}")
-            
-            # Store recommendations in database
-            await self._store_recommendations(recommendations)
-            
+            import aiohttp
+
+            # Use api-gateway on-demand endpoint (does NOT persist to DB) as a smoke test.
+            # This validates recommendation-engine is healthy and can generate for symbols.
+            async with aiohttp.ClientSession() as session:
+                for symbol in self.watchlist:
+                    try:
+                        self.log(f"  Generating on-demand recommendation for {symbol} via API...")
+                        async with session.post(
+                            "http://localhost:3001/api/v1/recommendations/on-demand",
+                            json={"symbol": symbol, "companyName": symbol},
+                            timeout=aiohttp.ClientTimeout(total=60),
+                        ) as resp:
+                            if resp.status != 200:
+                                body = await resp.text()
+                                raise RuntimeError(f"HTTP {resp.status}: {body[:120]}")
+                            data = await resp.json()
+                            sub_results.append(StepResult(
+                                name=symbol,
+                                status=StepStatus.SUCCESS,
+                                message=f"{data.get('action')} (score: {data.get('score')}, conf: {data.get('confidence')})",
+                            ))
+                    except Exception as e:
+                        sub_results.append(StepResult(
+                            name=symbol,
+                            status=StepStatus.WARNING,
+                            message=str(e)[:80],
+                        ))
+
+        except ImportError:
+            return StepResult(
+                name="Run Recommendations",
+                status=StepStatus.WARNING,
+                message="aiohttp not installed; skipping recommendation smoke test",
+                duration_seconds=time.time() - start,
+            )
         except Exception as e:
             return StepResult(
                 name="Run Recommendations",
-                status=StepStatus.FAILED,
-                message=f"Engine initialization failed: {str(e)[:50]}",
+                status=StepStatus.WARNING,
+                message=f"Recommendation smoke test failed: {str(e)[:80]}",
                 duration_seconds=time.time() - start,
             )
         
@@ -1139,11 +1338,87 @@ class StartUpApplication:
             )
     
     # =========================================================================
-    # STEP 10: Start Frontend (Web App)
+    # STEP 10: Smoke test core services (compose stack)
+    # =========================================================================
+
+    async def step10_smoke_test_services(self) -> StepResult:
+        """Smoke test key HTTP endpoints.
+
+        We intentionally keep this lightweight and avoid requiring local dependencies.
+        """
+        start = time.time()
+        sub_results: List[StepResult] = []
+
+        try:
+            import aiohttp
+        except ImportError:
+            return StepResult(
+                name="Smoke Test Services",
+                status=StepStatus.WARNING,
+                message="aiohttp not installed; skipping HTTP smoke tests",
+                duration_seconds=time.time() - start,
+            )
+
+        async with aiohttp.ClientSession() as session:
+            # API Gateway
+            try:
+                async with session.get("http://localhost:3001/health", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        sub_results.append(StepResult("api-gateway /health", StepStatus.SUCCESS, "OK"))
+                    else:
+                        sub_results.append(StepResult("api-gateway /health", StepStatus.WARNING, f"HTTP {resp.status}"))
+            except Exception as e:
+                sub_results.append(StepResult("api-gateway /health", StepStatus.FAILED, str(e)[:80]))
+
+            # Recommendation Engine
+            try:
+                async with session.get("http://localhost:8000/health", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        sub_results.append(StepResult("recommendation-engine /health", StepStatus.SUCCESS, "OK"))
+                    else:
+                        sub_results.append(StepResult("recommendation-engine /health", StepStatus.WARNING, f"HTTP {resp.status}"))
+            except Exception as e:
+                sub_results.append(StepResult("recommendation-engine /health", StepStatus.FAILED, str(e)[:80]))
+
+            # Web App
+            try:
+                async with session.get("http://localhost:5173/", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status in (200, 304):
+                        sub_results.append(StepResult("web-app /", StepStatus.SUCCESS, "OK"))
+                    else:
+                        sub_results.append(StepResult("web-app /", StepStatus.WARNING, f"HTTP {resp.status}"))
+            except Exception as e:
+                sub_results.append(StepResult("web-app /", StepStatus.FAILED, str(e)[:80]))
+
+        failed = [r for r in sub_results if r.status == StepStatus.FAILED]
+        warning = [r for r in sub_results if r.status == StepStatus.WARNING]
+        if failed:
+            status = StepStatus.WARNING
+            message = f"{len(failed)}/{len(sub_results)} smoke checks failed"
+        elif warning:
+            status = StepStatus.WARNING
+            message = f"{len(warning)}/{len(sub_results)} smoke checks returned warnings"
+        else:
+            status = StepStatus.SUCCESS
+            message = "All smoke checks passed"
+
+        return StepResult(
+            name="Smoke Test Services",
+            status=status,
+            message=message,
+            duration_seconds=time.time() - start,
+            sub_results=sub_results,
+        )
+
+    # =========================================================================
+    # (Legacy) STEP 10: Start Frontend (Web App)
     # =========================================================================
     
     async def step10_start_frontend(self) -> StepResult:
-        """Start the frontend web application."""
+        """(Deprecated) Previously started the frontend locally via npm.
+
+        The recommended local setup runs the web app via Docker Compose (service: web-app).
+        """
         start = time.time()
         
         self.log("Starting Frontend (Web App)...")
@@ -1232,7 +1507,7 @@ class StartUpApplication:
             
             # Start Vite dev server in background
             self.log("  Starting Vite dev server...")
-            log_file = os.path.join(PROJECT_ROOT, "tmp_rovodev_frontend.log")
+            log_file = os.path.join(PROJECT_ROOT, "frontend.log")
             
             with open(log_file, 'w') as f:
                 process = subprocess.Popen(
@@ -1350,17 +1625,14 @@ class StartUpApplication:
         self.print_header()
         
         steps = [
+            ("Prepare Repo", self.step0_prepare_repo),
             ("Start Docker Containers", self.step1_start_docker_containers),
+            ("Run DB Migrations", self.step1_5_run_db_migrations),
             ("Verify and Fix Services", self.step2_verify_and_fix_services),
             ("Test Data Connectors", self.step3_test_data_connectors),
             ("Test LLM Connectors", self.step4_test_llm_connectors),
-            ("News Sentiment Service", self.step6_start_news_sentiment_service),
             ("Run Recommendations", self.step5_run_recommendations),
-            ("Jim Cramer Service", self.step7_start_jim_cramer_service),
-            ("Big Cap Losers Service", self.step8_start_big_cap_losers_service),
-            ("API Gateway", self.step9_start_api_gateway),
-            ("Frontend", self.step10_start_frontend),
-            ("Refresh UI", self.step11_refresh_ui),
+            ("Smoke Test Services", self.step10_smoke_test_services),
         ]
         
         total_steps = len(steps)
@@ -1444,10 +1716,19 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python StartUpApplication.py                    # Full startup
-  python StartUpApplication.py --skip-docker      # Skip Docker startup
-  python StartUpApplication.py --skip-tests       # Skip connector tests
-  python StartUpApplication.py --symbols AAPL,MSFT  # Custom watchlist
+  python scripts/StartUpApplication.py
+
+  # Fresh machine bootstrap (clone + start)
+  python scripts/StartUpApplication.py --repo-url https://github.com/YOUR_USERNAME/autotrader-ai.git --branch main
+
+  # Start without rebuilding images
+  python scripts/StartUpApplication.py --skip-build
+
+  # Skip connector/API key tests
+  python scripts/StartUpApplication.py --skip-tests
+
+  # Custom watchlist for smoke-testing recommendations
+  python scripts/StartUpApplication.py --symbols AAPL,MSFT
         """
     )
     
@@ -1476,7 +1757,44 @@ Examples:
         action="store_true",
         help="Reduce output verbosity"
     )
-    
+
+    # Repo bootstrap options
+    parser.add_argument(
+        "--repo-url",
+        type=str,
+        default=None,
+        help="Optional Git repository URL to clone/pull (for new machine bootstrap)"
+    )
+    parser.add_argument(
+        "--branch",
+        type=str,
+        default="main",
+        help="Git branch to checkout when using --repo-url (default: main)"
+    )
+    parser.add_argument(
+        "--target-dir",
+        type=str,
+        default=None,
+        help="Target directory for --repo-url clone/pull (default: ~/autotrader-ai)"
+    )
+    parser.add_argument(
+        "--fresh-clone",
+        action="store_true",
+        help="Fail if target dir exists when using --repo-url (safety for new machine)"
+    )
+
+    # Docker/compose options
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Skip docker compose --build"
+    )
+    parser.add_argument(
+        "--prune-docker",
+        action="store_true",
+        help="Run docker system prune -f before starting (can help on low disk)"
+    )
+
     args = parser.parse_args()
     
     # Parse symbols
@@ -1491,6 +1809,12 @@ Examples:
         skip_tests=args.skip_tests,
         skip_news=args.skip_news,
         verbose=not args.quiet,
+        repo_url=args.repo_url,
+        branch=args.branch,
+        target_dir=args.target_dir,
+        fresh_clone=args.fresh_clone,
+        skip_build=args.skip_build,
+        prune_docker=args.prune_docker,
     )
     
     await startup.run()

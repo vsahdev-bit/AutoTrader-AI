@@ -249,6 +249,68 @@ export const tradeApi = {
 }
 
 /**
+ * Stock Quote Response type
+ */
+export interface StockQuote {
+  symbol: string
+  price: number | null
+  previousClose: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  volume: number | null
+  change: number | null
+  changePercent: number | null
+  fiftyTwoWeekHigh: number | null
+  fiftyTwoWeekLow: number | null
+  marketCap: number | null
+  currency: string
+  exchange: string
+  lastUpdated: string
+  error?: string
+}
+
+/**
+ * Stock Quotes API endpoints.
+ * 
+ * Fetches real-time stock prices from Yahoo Finance via the API gateway.
+ * These are current market prices, distinct from the historical
+ * price_at_recommendation stored with recommendations.
+ */
+export const stockQuotesApi = {
+  /**
+   * Get real-time quotes for multiple symbols.
+   * 
+   * Fetches current market prices for up to 50 symbols at once.
+   * Uses Yahoo Finance v8/finance/chart endpoint (no auth required).
+   * 
+   * @param symbols Array of stock symbols (e.g., ['AAPL', 'MSFT', 'GOOGL'])
+   * @returns Map of symbol to quote data
+   * 
+   * @example
+   * const { data } = await stockQuotesApi.getQuotes(['AAPL', 'MSFT'])
+   * console.log(data.quotes['AAPL'].price) // Current price
+   */
+  getQuotes: (symbols: string[]) =>
+    api.get<{
+      quotes: Record<string, StockQuote>
+      fetchedAt: string
+      successCount: number
+      errorCount: number
+      errors?: { symbol: string; error: string }[]
+    }>('/stocks/quotes', { params: { symbols: symbols.join(',') } }),
+  
+  /**
+   * Get real-time quote for a single symbol.
+   * 
+   * @param symbol Stock ticker symbol (e.g., 'AAPL')
+   * @returns Quote data with price, change, volume, etc.
+   */
+  getQuote: (symbol: string) =>
+    api.get<StockQuote>(`/stocks/quotes/${symbol.toUpperCase()}`),
+}
+
+/**
  * Connector Status API endpoints.
  * 
  * Fetches status information for all data connectors used by the

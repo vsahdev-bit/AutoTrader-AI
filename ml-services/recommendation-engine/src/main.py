@@ -877,56 +877,79 @@ class RecommendationEngine:
     def _calculate_technical_momentum_score(self, technical_features) -> float:
         """
         Calculate score from technical momentum indicators.
-        
-        Uses RSI, Stochastic, and ROC for mean-reversion signals.
+
+        Goal: produce a meaningful -1..+1 momentum score without collapsing to 0
+        just because an indicator is "neutral".
+
+        Uses a mix of:
+        - RSI (contrarian: oversold -> bullish, overbought -> bearish)
+        - Stochastic %K (contrarian)
+        - ROC (trend/momentum)
+        - Bollinger Band position (mean reversion)
+        - MACD histogram (trend/momentum confirmation)
         """
         if not technical_features:
             return 0.0
-        
+
         score = 0.0
         signals = 0
-        
+
         # RSI - contrarian signal (oversold = buy, overbought = sell)
-        rsi = technical_features.rsi
-        if rsi < 0.30:  # Oversold
-            score += 0.6  # Bullish signal
-            signals += 1
-        elif rsi > 0.70:  # Overbought
-            score -= 0.6  # Bearish signal
-            signals += 1
-        elif 0.45 <= rsi <= 0.55:  # Neutral zone
-            signals += 1  # Count but no score change
-        
+        rsi = getattr(technical_features, 'rsi', None)
+        if rsi is not None:
+            if rsi < 0.30:  # Oversold
+                score += 0.6
+                signals += 1
+            elif rsi > 0.70:  # Overbought
+                score -= 0.6
+                signals += 1
+            # NOTE: We intentionally do NOT count the neutral zone as a signal.
+            # Counting neutral as a signal dilutes other signals and drives the
+            # normalized output toward 0.
+
         # Stochastic - similar contrarian logic
-        stoch_k = technical_features.stochastic_k
-        if stoch_k < 0.20:  # Oversold
-            score += 0.4
-            signals += 1
-        elif stoch_k > 0.80:  # Overbought
-            score -= 0.4
-            signals += 1
-        
-        # ROC - momentum direction
-        roc = technical_features.roc
-        if roc > 0.05:  # Strong upward momentum
-            score += 0.4
-            signals += 1
-        elif roc < -0.05:  # Strong downward momentum
-            score -= 0.4
-            signals += 1
-        
+        stoch_k = getattr(technical_features, 'stochastic_k', None)
+        if stoch_k is not None:
+            if stoch_k < 0.20:
+                score += 0.4
+                signals += 1
+            elif stoch_k > 0.80:
+                score -= 0.4
+                signals += 1
+
+        # ROC - momentum direction (continuous)
+        # `roc` here is already normalized (roughly fraction change), so 0.01 ~ 1%.
+        roc = getattr(technical_features, 'roc', None)
+        if roc is not None:
+            # Scale small moves into a bounded contribution
+            roc_contrib = max(-0.4, min(0.4, roc * 10))
+            if abs(roc_contrib) > 0.02:  # ignore tiny noise
+                score += roc_contrib
+                signals += 1
+
         # Bollinger Band position
-        bb_pos = technical_features.bb_position
-        if bb_pos < 0.1:  # Near lower band
-            score += 0.3  # Potential bounce
-            signals += 1
-        elif bb_pos > 0.9:  # Near upper band
-            score -= 0.3  # Potential pullback
-            signals += 1
-        
-        # Normalize
+        bb_pos = getattr(technical_features, 'bb_position', None)
+        if bb_pos is not None:
+            if bb_pos < 0.10:
+                score += 0.3
+                signals += 1
+            elif bb_pos > 0.90:
+                score -= 0.3
+                signals += 1
+
+        # MACD histogram (normalized) - continuous
+        macd_hist = getattr(technical_features, 'macd_histogram_normalized', None)
+        if macd_hist is not None:
+            # macd_hist is typically a small number (hist / price), so scale it
+            macd_contrib = max(-0.3, min(0.3, macd_hist * 50))
+            if abs(macd_contrib) > 0.02:
+                score += macd_contrib
+                signals += 1
+
         if signals > 0:
             return max(-1.0, min(1.0, score / signals))
+
+        # If we truly have no usable indicators, return neutral
         return 0.0
     
     def _calculate_confidence(
@@ -1468,6 +1491,105 @@ async def health_check():
         news_features_available=news_provider is not None,
         technical_features_available=technical_provider is not None,
     )
+
+
+class SingleRecommendationRequest(BaseModel):
+    """Request model for generating a single on-demand recommendation."""
+    symbol: str = Field(..., description="Stock ticker symbol")
+    company_name: Optional[str] = Field(None, description="Company name")
+    save_to_db: bool = Field(False, description="Whether to save to database")
+
+
+@app.post("/generate/single")
+async def generate_single_recommendation(request: SingleRecommendationRequest):
+    """
+    Generate an on-demand recommendation for a single stock.
+    
+    This endpoint is used for instant recommendations without saving to database.
+    Useful for one-off lookups and the "Get Recommendation" feature.
+    
+    Args:
+        request: SingleRecommendationRequest with symbol and options
+        
+    Returns:
+        Recommendation object with all scores and explanation
+    """
+    symbol = request.symbol.upper().strip()
+    
+    logger.info(f"On-demand recommendation requested for {symbol}")
+    
+    try:
+        # Initialize engine
+        engine = RecommendationEngine(enable_regime=True)
+        await engine.initialize()
+        
+        # Generate the recommendation
+        recommendation = await engine.generate_recommendation(
+            symbol=symbol,
+            include_features=True,
+        )
+        
+        # Optionally save to database
+        if request.save_to_db:
+            pool = await get_db_pool()
+            if pool:
+                try:
+                    await pool.execute("""
+                        INSERT INTO stock_recommendations (
+                            symbol, action, score, normalized_score, confidence,
+                            price_at_recommendation, news_sentiment_score, news_momentum_score,
+                            technical_trend_score, technical_momentum_score,
+                            rsi, macd_histogram, price_vs_sma20,
+                            news_sentiment_1d, article_count_24h,
+                            explanation, data_sources_used, generated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+                    """,
+                        symbol,
+                        recommendation.action,
+                        recommendation.score,
+                        recommendation.normalized_score,
+                        recommendation.confidence,
+                        recommendation.price_at_recommendation,
+                        recommendation.news_sentiment_score,
+                        recommendation.news_momentum_score,
+                        recommendation.technical_trend_score,
+                        recommendation.technical_momentum_score,
+                        recommendation.rsi,
+                        recommendation.macd_histogram,
+                        recommendation.price_vs_sma20,
+                        recommendation.news_sentiment_1d,
+                        recommendation.article_count_24h,
+                        json.dumps(recommendation.explanation) if recommendation.explanation else None,
+                        json.dumps(["news", "technical"]),
+                    )
+                    logger.info(f"Saved recommendation for {symbol} to database")
+                except Exception as e:
+                    logger.warning(f"Failed to save recommendation to database: {e}")
+        
+        # Return the recommendation
+        return {
+            "symbol": recommendation.symbol,
+            "company_name": request.company_name or symbol,
+            "action": recommendation.action,
+            "confidence": recommendation.confidence,
+            "normalized_score": recommendation.normalized_score,
+            "score": recommendation.score,
+            "news_sentiment_score": recommendation.news_sentiment_score,
+            "news_momentum_score": recommendation.news_momentum_score,
+            "technical_trend_score": recommendation.technical_trend_score,
+            "technical_momentum_score": recommendation.technical_momentum_score,
+            "price_at_recommendation": recommendation.price_at_recommendation,
+            "rsi": recommendation.rsi,
+            "macd_histogram": recommendation.macd_histogram,
+            "explanation": recommendation.explanation,
+            "regime": recommendation.regime.dict() if recommendation.regime else None,
+            "signal_weights": recommendation.signal_weights.dict() if recommendation.signal_weights else None,
+            "generated_at": recommendation.generated_at.isoformat(),
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating recommendation for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/recommendations", response_model=RecommendationResponse)
