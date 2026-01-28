@@ -44,12 +44,59 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'streaming'))
 
 
 class StepStatus(Enum):
-    PENDING = "⏳"
-    RUNNING = "🔄"
-    SUCCESS = "✅"
-    WARNING = "⚠️"
-    FAILED = "❌"
-    SKIPPED = "⏭️"
+    # Use semantic names; render as emoji or ASCII depending on terminal support.
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    WARNING = "WARNING"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
+def _unicode_ok() -> bool:
+    """Best-effort check: can we print Unicode (including emoji) to the current stdout?"""
+    try:
+        enc = (getattr(sys.stdout, "encoding", None) or "").lower()
+        # If it's UTF, we can usually print emoji safely.
+        if "utf" in enc:
+            return True
+        # Otherwise try an encode roundtrip against stdout encoding.
+        test = "✅"
+        (test).encode(sys.stdout.encoding or "utf-8")
+        return True
+    except Exception:
+        return False
+
+
+_UNICODE_OK = _unicode_ok()
+
+
+def _status_mark(status: StepStatus) -> str:
+    if _UNICODE_OK:
+        return {
+            StepStatus.PENDING: "⏳",
+            StepStatus.RUNNING: "🔄",
+            StepStatus.SUCCESS: "✅",
+            StepStatus.WARNING: "⚠️",
+            StepStatus.FAILED: "❌",
+            StepStatus.SKIPPED: "⏭️",
+        }[status]
+    return {
+        StepStatus.PENDING: "...",
+        StepStatus.RUNNING: "..",
+        StepStatus.SUCCESS: "OK",
+        StepStatus.WARNING: "WARN",
+        StepStatus.FAILED: "FAIL",
+        StepStatus.SKIPPED: "SKIP",
+    }[status]
+
+
+def _safe(s: str) -> str:
+    """Ensure we don't crash printing to a non-UTF8 terminal."""
+    if _UNICODE_OK:
+        return s
+    # Replace non-ascii chars with '?' for safety.
+    return s.encode("ascii", errors="replace").decode("ascii")
 
 
 @dataclass
@@ -162,7 +209,7 @@ class StartUpApplication:
     def print_header(self):
         """Print startup header."""
         print("\n" + "=" * 70)
-        print("🚀 AUTOTRADER APPLICATION STARTUP")
+        print(_safe("AUTOTRADER APPLICATION STARTUP"))
         print("=" * 70)
         print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Watchlist: {', '.join(self.watchlist)}")
@@ -170,9 +217,9 @@ class StartUpApplication:
     
     def print_step(self, step_num: int, total: int, name: str):
         """Print step header."""
-        print(f"\n{'─' * 70}")
-        print(f"📌 Step {step_num}/{total}: {name}")
-        print(f"{'─' * 70}")
+        print("\n" + "-" * 70)
+        print(_safe(f"Step {step_num}/{total}: {name}"))
+        print("-" * 70)
     
     # =========================================================================
     # STEP 0: Prepare Repo (clone/pull)
@@ -304,7 +351,7 @@ class StartUpApplication:
                 try:
                     _run(["docker", "system", "prune", "-f"], timeout=600)
                 except Exception as e:
-                    self.log(f"  ⚠️ docker prune failed: {e}")
+                    self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} docker prune failed: {e}"))
 
             compose_bin = "docker-compose"
             if _which("docker"):
@@ -365,7 +412,7 @@ class StartUpApplication:
                 status=status,
                 message=msg,
             ))
-            self.log(f"  {status.value} {service}: {msg}")
+            self.log(_safe(f"  {_status_mark(status)} {service}: {msg}"))
         
         # Determine overall status
         failed = [r for r in sub_results if r.status == StepStatus.FAILED]
@@ -468,28 +515,28 @@ class StartUpApplication:
         sub_results.append(StepResult(name="PostgreSQL", status=pg_status, message=pg_msg))
         if pg_fix:
             fixes_applied.append(pg_fix)
-        self.log(f"  {pg_status.value} PostgreSQL: {pg_msg}")
+        self.log(_safe(f"  {_status_mark(pg_status)} PostgreSQL: {pg_msg}"))
         
         # Check ClickHouse
         ch_status, ch_msg, ch_fix = await self._check_clickhouse()
         sub_results.append(StepResult(name="ClickHouse", status=ch_status, message=ch_msg))
         if ch_fix:
             fixes_applied.append(ch_fix)
-        self.log(f"  {ch_status.value} ClickHouse: {ch_msg}")
+        self.log(_safe(f"  {_status_mark(ch_status)} ClickHouse: {ch_msg}"))
         
         # Check Vault
         vault_status, vault_msg, vault_fix = await self._check_vault()
         sub_results.append(StepResult(name="Vault", status=vault_status, message=vault_msg))
         if vault_fix:
             fixes_applied.append(vault_fix)
-        self.log(f"  {vault_status.value} Vault: {vault_msg}")
+        self.log(_safe(f"  {_status_mark(vault_status)} Vault: {vault_msg}"))
         
         # Check Redis
         redis_status, redis_msg, redis_fix = await self._check_redis()
         sub_results.append(StepResult(name="Redis", status=redis_status, message=redis_msg))
         if redis_fix:
             fixes_applied.append(redis_fix)
-        self.log(f"  {redis_status.value} Redis: {redis_msg}")
+        self.log(_safe(f"  {_status_mark(redis_status)} Redis: {redis_msg}"))
         
         failed = [r for r in sub_results if r.status == StepStatus.FAILED]
         if failed:
@@ -612,12 +659,12 @@ class StartUpApplication:
                         status=StepStatus.WARNING,
                         message="No API key configured",
                     ))
-                    self.log(f"  ⚠️ {name}: No API key configured")
+                    self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} {name}: No API key configured"))
                     continue
                 
                 status, msg = await self._test_data_connector(name, api_key)
                 sub_results.append(StepResult(name=name, status=status, message=msg))
-                self.log(f"  {status.value} {name}: {msg}")
+                self.log(_safe(f"  {_status_mark(status)} {name}: {msg}"))
                 
             except Exception as e:
                 sub_results.append(StepResult(
@@ -625,7 +672,7 @@ class StartUpApplication:
                     status=StepStatus.FAILED,
                     message=str(e)[:50],
                 ))
-                self.log(f"  ❌ {name}: {str(e)[:50]}")
+                self.log(_safe(f"  {_status_mark(StepStatus.FAILED)} {name}: {str(e)[:50]}"))
         
         await vault_client.close()
         
@@ -716,12 +763,12 @@ class StartUpApplication:
                         status=StepStatus.WARNING,
                         message="No API key configured",
                     ))
-                    self.log(f"  ⚠️ {name}: No API key configured")
+                    self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} {name}: No API key configured"))
                     continue
                 
                 status, msg = await self._test_llm_connector(name, api_key)
                 sub_results.append(StepResult(name=name, status=status, message=msg))
-                self.log(f"  {status.value} {name}: {msg}")
+                self.log(_safe(f"  {_status_mark(status)} {name}: {msg}"))
                 
             except Exception as e:
                 sub_results.append(StepResult(
@@ -729,7 +776,7 @@ class StartUpApplication:
                     status=StepStatus.FAILED,
                     message=str(e)[:50],
                 ))
-                self.log(f"  ❌ {name}: {str(e)[:50]}")
+                self.log(_safe(f"  {_status_mark(StepStatus.FAILED)} {name}: {str(e)[:50]}"))
         
         await vault_client.close()
         
@@ -951,13 +998,13 @@ class StartUpApplication:
             
             await conn.close()
             
-            self.log(f"  ✅ Stored {len(recommendations)} recommendations in database")
+            self.log(_safe(f"  {_status_mark(StepStatus.SUCCESS)} Stored {len(recommendations)} recommendations in database"))
             
         except ImportError:
-            self.log("  ⚠️ asyncpg not installed - skipping database storage")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} asyncpg not installed - skipping database storage"))
         except Exception as e:
             import traceback
-            self.log(f"  ⚠️ Failed to store recommendations: {str(e)}")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} Failed to store recommendations: {str(e)}"))
             self.log(f"      {traceback.format_exc()[:200]}")
     
     # =========================================================================
@@ -1035,7 +1082,7 @@ class StartUpApplication:
                 )
                 
         except ImportError as e:
-            self.log(f"  ⚠️ News ingestion service not available: {e}")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} News ingestion service not available: {e}"))
             return StepResult(
                 name="News Sentiment Service",
                 status=StepStatus.WARNING,
@@ -1044,7 +1091,7 @@ class StartUpApplication:
             )
         except Exception as e:
             import traceback
-            self.log(f"  ❌ News sentiment service failed: {e}")
+            self.log(_safe(f"  {_status_mark(StepStatus.FAILED)} News sentiment service failed: {e}"))
             self.log(f"      {traceback.format_exc()[:200]}")
             return StepResult(
                 name="News Sentiment Service",
@@ -1083,7 +1130,7 @@ class StartUpApplication:
                     duration_seconds=time.time() - start,
                 )
             
-            self.log("  ✅ GROQ API key retrieved")
+            self.log(_safe(f"  {_status_mark(StepStatus.SUCCESS)} GROQ API key retrieved"))
             
             # Set environment variable and start the service
             os.environ['GROQ_API_KEY'] = groq_api_key
@@ -1101,7 +1148,7 @@ class StartUpApplication:
             )
             
             if result.returncode != 0:
-                self.log(f"  ⚠️ docker-compose stderr: {result.stderr[:200]}")
+                self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} docker-compose stderr: {result.stderr[:200]}"))
             
             # Wait for container to start and check logs
             await asyncio.sleep(5)
@@ -1183,7 +1230,7 @@ class StartUpApplication:
             )
             
             if result.returncode != 0:
-                self.log(f"  ⚠️ docker-compose stderr: {result.stderr[:200]}")
+                self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} docker-compose stderr: {result.stderr[:200]}"))
             
             # Wait for container to start
             await asyncio.sleep(5)
@@ -1211,7 +1258,7 @@ class StartUpApplication:
                                 ],
                             )
             except Exception as e:
-                self.log(f"  ⚠️ HTTP health check failed: {e}")
+                self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} HTTP health check failed: {e}"))
             
             # Check container logs as fallback
             check_result = subprocess.run(
@@ -1283,7 +1330,7 @@ class StartUpApplication:
             )
             
             if result.returncode != 0:
-                self.log(f"  ⚠️ docker-compose stderr: {result.stderr[:200]}")
+                self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} docker-compose stderr: {result.stderr[:200]}"))
             
             # Wait for service to start
             await asyncio.sleep(3)
@@ -1494,7 +1541,7 @@ class StartUpApplication:
                             timeout=aiohttp.ClientTimeout(total=3)
                         ) as resp:
                             if resp.status == 200:
-                                self.log(f"  ✅ Frontend already running on port {port}")
+                                self.log(_safe(f"  {_status_mark(StepStatus.SUCCESS)} Frontend already running on port {port}"))
                                 return StepResult(
                                     name="Frontend",
                                     status=StepStatus.SUCCESS,
@@ -1573,9 +1620,9 @@ class StartUpApplication:
         try:
             with open(refresh_file, 'w') as f:
                 f.write(datetime.now().isoformat())
-            self.log(f"  ✅ Created refresh signal file")
+            self.log(_safe(f"  {_status_mark(StepStatus.SUCCESS)} Created refresh signal file"))
         except Exception as e:
-            self.log(f"  ⚠️ Could not create refresh file: {e}")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} Could not create refresh file: {e}"))
         
         # Method 2: Try to notify via Redis pub/sub
         try:
@@ -1586,11 +1633,11 @@ class StartUpApplication:
                 'symbols': self.watchlist,
             }))
             r.close()
-            self.log(f"  ✅ Published Redis notification")
+            self.log(_safe(f"  {_status_mark(StepStatus.SUCCESS)} Published Redis notification"))
         except ImportError:
-            self.log(f"  ⚠️ Redis not installed - skipping pub/sub notification")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} Redis not installed - skipping pub/sub notification"))
         except Exception as e:
-            self.log(f"  ⚠️ Redis notification failed: {str(e)[:50]}")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} Redis notification failed: {str(e)[:50]}"))
         
         # Method 3: Call the web app's refresh endpoint (if running)
         try:
@@ -1602,11 +1649,11 @@ class StartUpApplication:
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
                     if resp.status == 200:
-                        self.log(f"  ✅ Web app refresh endpoint called")
+                        self.log(_safe(f"  {_status_mark(StepStatus.SUCCESS)} Web app refresh endpoint called"))
                     else:
-                        self.log(f"  ⚠️ Web app returned status {resp.status}")
+                        self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} Web app returned status {resp.status}"))
         except Exception as e:
-            self.log(f"  ⚠️ Web app not reachable (this is OK if not running)")
+            self.log(_safe(f"  {_status_mark(StepStatus.WARNING)} Web app not reachable (this is OK if not running)"))
         
         return StepResult(
             name="Refresh UI",
@@ -1659,7 +1706,7 @@ class StartUpApplication:
         total_duration = time.time() - self.start_time
         
         print("\n" + "=" * 70)
-        print("📋 STARTUP SUMMARY")
+        print(_safe("STARTUP SUMMARY"))
         print("=" * 70)
         
         # Step results table
@@ -1669,7 +1716,7 @@ class StartUpApplication:
         
         for result in self.results:
             name = result.name[:35].ljust(35)
-            status = result.status.value
+            status = _status_mark(result.status)
             duration = f"{result.duration_seconds:.1f}s".rjust(8)
             print(f"│ {name} │ {status}       │ {duration} │")
         
@@ -1681,15 +1728,15 @@ class StartUpApplication:
         failed = len([r for r in self.results if r.status == StepStatus.FAILED])
         skipped = len([r for r in self.results if r.status == StepStatus.SKIPPED])
         
-        print(f"\n📊 Results: {success} ✅ Success | {warning} ⚠️ Warning | {failed} ❌ Failed | {skipped} ⏭️ Skipped")
-        print(f"⏱️  Total Duration: {total_duration:.1f} seconds")
+        print(_safe(f"\nResults: {success} Success | {warning} Warning | {failed} Failed | {skipped} Skipped"))
+        print(_safe(f"Total Duration: {total_duration:.1f} seconds"))
         
         # Detailed sub-results
         for result in self.results:
             if result.sub_results:
-                print(f"\n📝 {result.name} Details:")
+                print(_safe(f"\n{result.name} Details:"))
                 for sub in result.sub_results:
-                    print(f"   {sub.status.value} {sub.name}: {sub.message}")
+                    print(_safe(f"   {_status_mark(sub.status)} {sub.name}: {sub.message}"))
         
         # Recommendations summary
         rec_result = next((r for r in self.results if r.name == "Run Recommendations"), None)
@@ -1701,11 +1748,11 @@ class StartUpApplication:
         # Final status
         print("\n" + "=" * 70)
         if failed > 0:
-            print("❌ STARTUP COMPLETED WITH ERRORS")
+            print(_safe("STARTUP COMPLETED WITH ERRORS"))
         elif warning > 0:
-            print("⚠️ STARTUP COMPLETED WITH WARNINGS")
+            print(_safe("STARTUP COMPLETED WITH WARNINGS"))
         else:
-            print("✅ STARTUP COMPLETED SUCCESSFULLY")
+            print(_safe("STARTUP COMPLETED SUCCESSFULLY"))
         print("=" * 70 + "\n")
 
 
