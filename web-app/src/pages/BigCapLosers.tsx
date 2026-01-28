@@ -17,7 +17,6 @@ import type { RegimeResponse } from '../types'
 // Types
 interface BigCapLoser {
   id: number
-  loser_id?: number
   symbol: string
   company_name: string
   current_price: string
@@ -29,7 +28,6 @@ interface BigCapLoser {
   trading_date: string
   crawled_at: string
   // Recommendation fields
-  recommendation_id?: string
   action?: 'BUY' | 'SELL' | 'HOLD'
   score?: number
   normalized_score?: number
@@ -38,7 +36,10 @@ interface BigCapLoser {
   regime_confidence?: number
   news_score?: number
   technical_score?: number
+  details_url?: string
+  top_news?: any[]
   explanation?: any
+  recommendation_error?: string
   recommendation_generated_at?: string
 }
 
@@ -114,18 +115,8 @@ async function fetchSummary(): Promise<DailySummary | null> {
   }
 }
 
-async function generateRecommendations(): Promise<{ success: boolean; generated: number }> {
-  try {
-    const response = await fetch(`${API_BASE}/api/big-cap-losers/generate-recommendations`, {
-      method: 'POST'
-    })
-    if (!response.ok) return { success: false, generated: 0 }
-    return await response.json()
-  } catch (error) {
-    console.error('Error generating recommendations:', error)
-    return { success: false, generated: 0 }
-  }
-}
+// Legacy: generating recommendations separately is no longer needed.
+// Refresh runs the full crawl + recommendation flow.
 
 async function fetchRegimeData(symbol: string): Promise<RegimeResponse | null> {
   try {
@@ -768,7 +759,7 @@ function LoserRow({
           if (typeof explanation === 'string') {
             try { explanation = JSON.parse(explanation) } catch { explanation = null }
           }
-          const articles = explanation?.recent_articles || []
+          const articles = (loser.top_news || explanation?.recent_articles || []) as any[]
           const hasArticles = Array.isArray(articles) && articles.length > 0
 
           return hasArticles ? (
@@ -785,7 +776,7 @@ function LoserRow({
         })()}
       </td>
       <td className="px-3 py-3 text-center">
-        {loser.recommendation_id ? (
+        {loser.details_url || loser.explanation ? (
           <button
             onClick={() => onExplanationClick(loser)}
             className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium"
@@ -817,7 +808,6 @@ export default function BigCapLosers() {
   const [isTopNewsModalOpen, setIsTopNewsModalOpen] = useState(false)
   const [topNewsSymbol, setTopNewsSymbol] = useState<string | null>(null)
   const [topNewsArticles, setTopNewsArticles] = useState<any[]>([])
-  const [isGeneratingRecs, setIsGeneratingRecs] = useState(false)
   const [regimeData, setRegimeData] = useState<Record<string, RegimeResponse>>({})
   const [selectedRegimeSymbol, setSelectedRegimeSymbol] = useState<string | null>(null)
 
@@ -981,31 +971,6 @@ export default function BigCapLosers() {
       setTimeout(() => setRefreshMessage(null), 3000)
     } finally {
       setIsRefreshing(false)
-    }
-  }
-
-  const handleGenerateRecommendations = async () => {
-    try {
-      setIsGeneratingRecs(true)
-      setRefreshMessage('Generating AI recommendations for all losers...')
-      
-      const result = await generateRecommendations()
-      
-      if (result.success) {
-        setRefreshMessage(`✓ Generated recommendations for ${result.generated} stocks`)
-        // Reload data to show new recommendations
-        await loadData()
-      } else {
-        setRefreshMessage('Failed to generate recommendations')
-      }
-      
-      setTimeout(() => setRefreshMessage(null), 5000)
-    } catch (error) {
-      console.error('Error generating recommendations:', error)
-      setRefreshMessage('Failed to generate recommendations')
-      setTimeout(() => setRefreshMessage(null), 3000)
-    } finally {
-      setIsGeneratingRecs(false)
     }
   }
 
@@ -1301,34 +1266,6 @@ export default function BigCapLosers() {
             </div>
           )}
         </div>
-
-        {/* Generate Recommendations Button */}
-        {displayLosers.length > 0 && displayLosers.some(l => !l.recommendation_id) && (
-          <div className="mt-4 text-center">
-            <button
-              onClick={handleGenerateRecommendations}
-              disabled={isGeneratingRecs}
-              className={`px-6 py-3 rounded-lg font-medium transition ${
-                isGeneratingRecs
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-blue-600 text-white hover:bg-blue-700'
-              }`}
-            >
-              {isGeneratingRecs ? (
-                <span className="flex items-center gap-2">
-                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Generating AI Recommendations...
-                </span>
-              ) : (
-                '🤖 Generate AI Recommendations for All'
-              )}
-            </button>
-            <p className="text-xs text-gray-500 mt-2">Click to analyze all stocks with our AI recommendation engine</p>
-          </div>
-        )}
 
         {/* Top News Modal */}
         <TopNewsModal

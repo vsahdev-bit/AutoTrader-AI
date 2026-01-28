@@ -1,0 +1,66 @@
+"""Recommendation integration for Big Cap Losers.
+
+Calls the recommendation-engine service and maps its response into fields stored
+on big_cap_losers rows.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, Optional
+
+import aiohttp
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_get(d: Optional[Dict[str, Any]], path: str):
+    cur = d
+    for part in path.split('.'):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+async def fetch_recommendation(session: aiohttp.ClientSession, symbol: str) -> Dict[str, Any]:
+    """Fetch recommendation from recommendation-engine for a symbol."""
+    url = f"http://recommendation-engine:8000/recommendations/{symbol}?include_features=true"
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+        if resp.status != 200:
+            text = await resp.text()
+            raise RuntimeError(f"recommendation-engine HTTP {resp.status}: {text[:200]}")
+        return await resp.json()
+
+
+def map_recommendation_to_row(rec: Dict[str, Any], api_base: str, symbol: str) -> Dict[str, Any]:
+    """Map recommendation-engine response JSON into big_cap_losers columns."""
+    explanation = rec.get("explanation")
+    # Top news: the recommendation engine includes recent_articles inside explanation.
+    top_news = None
+    if isinstance(explanation, dict):
+        ra = explanation.get("recent_articles")
+        if isinstance(ra, list):
+            top_news = ra[:10]
+
+    regime_label = _safe_get(rec, "regime.label") or _safe_get(rec, "regime.volatility")
+    regime_conf = _safe_get(rec, "regime.confidence") or _safe_get(rec, "regime.risk_score")
+
+    # Component scores (best-effort mapping)
+    news_score = rec.get("news_sentiment_score")
+    technical_score = rec.get("technical_trend_score")
+
+    return {
+        "action": rec.get("action"),
+        "score": rec.get("score"),
+        "normalized_score": rec.get("normalized_score"),
+        "confidence": rec.get("confidence"),
+        "market_regime": regime_label,
+        "regime_confidence": regime_conf,
+        "news_score": news_score,
+        "technical_score": technical_score,
+        "details_url": f"{api_base}/api/big-cap-losers/recommendation/{symbol}",
+        "top_news": top_news,
+        "explanation": explanation,
+        "recommendation_generated_at": rec.get("generated_at"),
+    }

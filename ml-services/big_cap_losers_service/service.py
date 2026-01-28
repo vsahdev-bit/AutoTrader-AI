@@ -1,7 +1,12 @@
-"""
-Big Cap Losers Service
-Runs every 2 hours to crawl Yahoo Finance losers and track big cap stocks (>$50B)
-that have fallen significantly.
+"""Big Cap Losers Service
+
+Spec:
+- Crawls Yahoo Finance losers page
+- Filters market cap > $1B
+- Stores top 25 losers (by percent change, most negative first)
+- Replaces existing snapshot each run (delete+insert)
+- For each symbol, calls the recommendation engine and stores the results
+- Exposes /refresh for on-demand triggers (hourly schedule is external)
 """
 
 import asyncio
@@ -28,7 +33,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://autotrader:autotrader_dev_pass@localhost:5432/autotrader')
 MIN_MARKET_CAP = 1_000_000_000  # $1B
-SIGNIFICANT_DROP_THRESHOLD = -10.0  # 10% drop
+SIGNIFICANT_DROP_THRESHOLD = -10.0  # 10% drop (used for the 'over 10%' UI tab)
+TOP_N = int(os.environ.get('TOP_N_LOSERS', '25'))
 
 
 class BigCapLosersService:
@@ -62,33 +68,12 @@ class BigCapLosersService:
         logger.info("BigCapLosersService closed")
     
     async def store_loser(self, loser: StockLoser, trading_date: datetime) -> int:
-        """Store a single loser record in the database"""
+        """Insert a single loser record in the database.
+
+        Per spec, we replace the snapshot each run (delete+insert), so this method
+        always inserts.
+        """
         async with self.db_pool.acquire() as conn:
-            # Check for existing record with same symbol and similar crawl time (within 1 hour)
-            existing = await conn.fetchval("""
-                SELECT id FROM big_cap_losers 
-                WHERE symbol = $1 
-                AND crawled_at > NOW() - INTERVAL '1 hour'
-            """, loser.symbol)
-            
-            if existing:
-                # Update existing record
-                await conn.execute("""
-                    UPDATE big_cap_losers SET
-                        current_price = $2,
-                        price_change = $3,
-                        percent_change = $4,
-                        market_cap = $5,
-                        market_cap_formatted = $6,
-                        volume = $7,
-                        crawled_at = NOW()
-                    WHERE id = $1
-                """, existing, loser.current_price, loser.price_change,
-                    loser.percent_change, loser.market_cap, loser.market_cap_formatted,
-                    loser.volume)
-                return existing
-            
-            # Insert new record
             record_id = await conn.fetchval("""
                 INSERT INTO big_cap_losers (
                     symbol, company_name, current_price, price_change, percent_change,
@@ -242,26 +227,38 @@ class BigCapLosersService:
             # Crawl Yahoo Finance
             losers = await self.crawler.crawl()
             stats['big_cap_losers'] = len(losers)
-            
-            # Store each loser
+
+            # Sort worst performers first (most negative percent_change) and take top N
+            losers = sorted(losers, key=lambda x: x.percent_change)[:TOP_N]
+
+            # Replace snapshot: delete all rows first
+            async with self.db_pool.acquire() as conn:
+                await conn.execute("DELETE FROM big_cap_losers")
+
             trading_date = datetime.utcnow()
             stored_count = 0
-            over_15_count = 0
-            
+            over_10_count = 0
+
+            loser_rows: List[Dict[str, Any]] = []
+
+            # Insert losers
             for loser in losers:
                 try:
-                    await self.store_loser(loser, trading_date)
+                    loser_id = await self.store_loser(loser, trading_date)
                     stored_count += 1
-                    
                     if loser.percent_change <= SIGNIFICANT_DROP_THRESHOLD:
-                        over_15_count += 1
-                        logger.warning(f"🔴 SIGNIFICANT DROP: {loser.symbol} down {loser.percent_change:.2f}% ({loser.market_cap_formatted})")
-                    
+                        over_10_count += 1
+                    loser_rows.append({"id": loser_id, "symbol": loser.symbol, "company_name": loser.company_name})
                 except Exception as e:
                     logger.error(f"Error storing {loser.symbol}: {e}")
-            
+
             stats['stored'] = stored_count
-            stats['over_15_percent'] = over_15_count
+            stats['over_15_percent'] = over_10_count
+            stats['top_n'] = TOP_N
+
+            # Generate recommendations inline per loser (tolerate per-symbol failures)
+            recommendations_generated = await self.generate_and_store_recommendations(loser_rows)
+            stats['recommendations_generated'] = recommendations_generated
             
             # Generate daily summary
             await self.generate_daily_summary(losers, trading_date)
@@ -280,16 +277,9 @@ class BigCapLosersService:
             logger.info(f"  Duration: {stats['duration_seconds']}s")
             logger.info("=" * 60)
             
-            # Trigger recommendation generation for all big cap losers
-            if stats['big_cap_losers'] > 0:
-                logger.info("Triggering recommendation generation for big cap losers...")
-                recommendations_generated = await self.trigger_recommendations()
-                stats['recommendations_generated'] = recommendations_generated
-            
-            # Cleanup old data (older than 1 day)
-            logger.info("Cleaning up old data...")
-            cleanup_counts = await self.cleanup_old_data()
-            stats['cleanup'] = cleanup_counts
+            # NOTE: recommendations are generated inline per-symbol above and stored on big_cap_losers rows.
+            # Cleanup old data is no longer needed because we replace the snapshot each run.
+            stats['cleanup'] = {"losers": 0, "recommendations": 0, "crawl_logs": 0}
             
         except Exception as e:
             stats['status'] = 'failed'
@@ -305,141 +295,78 @@ class BigCapLosersService:
         
         return stats
     
-    async def trigger_recommendations(self) -> int:
-        """Generate recommendations for all big cap losers with regime data.
-        
-        Returns:
-            Number of recommendations generated
+    async def generate_and_store_recommendations(self, loser_rows: List[Dict[str, Any]]) -> int:
+        """Generate recommendations for each loser row and store inline fields on big_cap_losers.
+
+        This calls the recommendation-engine and stores action/score/confidence/regime/top_news/explanation.
+        Per spec, failures are tolerated per-symbol and recorded in recommendation_error.
         """
         import aiohttp
-        
-        async def fetch_regime(session, symbol):
-            """Fetch market regime for a symbol."""
-            try:
-                async with session.get(
-                    f"http://recommendation-engine:8000/regime/{symbol}",
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get('regime', {})
-            except Exception as e:
-                logger.debug(f"Could not fetch regime for {symbol}: {e}")
-            return None
-        
+        from .recommender import fetch_recommendation, map_recommendation_to_row
+
+        if not loser_rows:
+            return 0
+
+        api_base = os.environ.get('PUBLIC_API_BASE', 'http://localhost:3001')
+
         saved = 0
-        try:
+        async with aiohttp.ClientSession() as session:
             async with self.db_pool.acquire() as conn:
-                # Get all current big cap losers
-                rows = await conn.fetch("""
-                    SELECT DISTINCT ON (symbol) id, symbol, current_price, percent_change, market_cap, market_cap_formatted
-                    FROM big_cap_losers
-                    WHERE market_cap >= 1000000000
-                    ORDER BY symbol, crawled_at DESC
-                """)
-            
-            if not rows:
-                logger.info("No symbols to generate recommendations for")
-                return 0
-            
-            logger.info(f"Generating recommendations for {len(rows)} symbols")
-            
-            async with aiohttp.ClientSession() as session:
-                async with self.db_pool.acquire() as conn:
-                    for row in rows:
-                        try:
-                            symbol = row['symbol']
-                            percent_drop = float(row['percent_change'] or 0)
-                            
-                            # Fetch market regime
-                            regime_data = await fetch_regime(session, symbol)
-                            market_regime = None
-                            regime_confidence = None
-                            
-                            if regime_data:
-                                market_regime = regime_data.get('label') or regime_data.get('volatility')
-                                # Use confidence if available, otherwise use risk_score
-                                regime_confidence = regime_data.get('confidence') or regime_data.get('risk_score')
-                            
-                            # Calculate a meaningful score based on multiple factors
-                            drop_magnitude = abs(percent_drop)
-                            market_cap_val = float(row['market_cap'] if 'market_cap' in row.keys() else 0)
-                            
-                            # Base score from drop magnitude (contrarian: bigger drop = potentially better opportunity)
-                            # Maps -5% to -25%+ drop to 0.4-0.8 score range
-                            drop_score = min(0.8, max(0.4, 0.4 + (drop_magnitude - 5) * 0.02))
-                            
-                            # Market cap factor: larger companies are generally safer (slight boost)
-                            cap_boost = 0
-                            if market_cap_val >= 100_000_000_000:  # >$100B
-                                cap_boost = 0.05
-                            elif market_cap_val >= 50_000_000_000:  # >$50B
-                                cap_boost = 0.03
-                            elif market_cap_val >= 10_000_000_000:  # >$10B
-                                cap_boost = 0.01
-                            
-                            # Regime adjustment: if we have regime data, adjust based on risk
-                            regime_adjust = 0
-                            if regime_confidence is not None:
-                                # Lower risk_score is better, so invert it
-                                regime_adjust = (0.5 - (regime_confidence or 0.5)) * 0.1
-                            
-                            # Calculate final normalized score (0-1 range)
-                            normalized_score = min(0.95, max(0.3, drop_score + cap_boost + regime_adjust))
-                            
-                            # Determine action based on normalized score
-                            if normalized_score >= 0.65:
-                                action = 'BUY'
-                            elif normalized_score <= 0.35:
-                                action = 'SELL'
-                            else:
-                                action = 'HOLD'
-                            
-                            # Use regime confidence if available, otherwise calculate based on drop magnitude
-                            confidence = regime_confidence if regime_confidence else (0.6 if drop_magnitude > 15 else 0.5 if drop_magnitude > 10 else 0.4)
-                            
-                            explanation = {
-                                'summary': f"Stock has dropped {abs(percent_drop):.1f}% today. This significant move warrants careful analysis.",
-                                'reasoning': 'Large single-day drops can indicate panic selling and potential oversold conditions.' if percent_drop <= -15 else 'Moderate drop detected. Monitor for further developments.',
-                                'key_factors': [
-                                    f"{abs(percent_drop):.1f}% daily decline",
-                                    f"Market cap: {row['market_cap_formatted'] or 'Unknown'}",
-                                    f"Market regime: {market_regime}" if market_regime else "Regime data pending"
-                                ],
-                                'risk_factors': [
-                                    'Large price movements may indicate fundamental issues',
-                                    'Further downside possible'
-                                ]
-                            }
-                            
-                            await conn.execute("""
-                                INSERT INTO big_cap_losers_recommendations (
-                                    big_cap_loser_id, symbol, action, score, normalized_score, confidence,
-                                    market_regime, regime_confidence,
-                                    price_at_recommendation, explanation, data_sources_used, generated_at
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+                for row in loser_rows:
+                    loser_id = row.get('id')
+                    symbol = row.get('symbol')
+                    if not loser_id or not symbol:
+                        continue
+                    try:
+                        rec = await fetch_recommendation(session, symbol)
+                        mapped = map_recommendation_to_row(rec, api_base=api_base, symbol=symbol)
+
+                        await conn.execute(
+                            """
+                            UPDATE big_cap_losers SET
+                                action = $2,
+                                score = $3,
+                                normalized_score = $4,
+                                confidence = $5,
+                                market_regime = $6,
+                                regime_confidence = $7,
+                                news_score = $8,
+                                technical_score = $9,
+                                details_url = $10,
+                                top_news = $11,
+                                explanation = $12,
+                                recommendation_generated_at = $13,
+                                recommendation_error = NULL
+                            WHERE id = $1
                             """,
-                                row['id'],
-                                symbol,
-                                action,
-                                normalized_score - 0.5,
-                                normalized_score,
-                                confidence,
-                                market_regime,
-                                regime_confidence,
-                                row['current_price'],
-                                json.dumps(explanation),
-                                ['price_data', 'regime_data'] if market_regime else ['price_data']
-                            )
-                            saved += 1
-                        except Exception as e:
-                            logger.error(f"Error saving recommendation for {row['symbol']}: {e}")
-            
-            logger.info(f"✓ Generated {saved} recommendations")
-                    
-        except Exception as e:
-            logger.error(f"Error generating recommendations: {e}")
-        
+                            loser_id,
+                            mapped.get('action'),
+                            mapped.get('score'),
+                            mapped.get('normalized_score'),
+                            mapped.get('confidence'),
+                            mapped.get('market_regime'),
+                            mapped.get('regime_confidence'),
+                            mapped.get('news_score'),
+                            mapped.get('technical_score'),
+                            mapped.get('details_url'),
+                            json.dumps(mapped.get('top_news')) if mapped.get('top_news') is not None else None,
+                            json.dumps(mapped.get('explanation')) if mapped.get('explanation') is not None else None,
+                            mapped.get('recommendation_generated_at'),
+                        )
+                        saved += 1
+                    except Exception as e:
+                        logger.error(f"Recommendation failed for {symbol}: {e}")
+                        await conn.execute(
+                            """
+                            UPDATE big_cap_losers SET
+                                recommendation_error = $2,
+                                recommendation_generated_at = NOW()
+                            WHERE id = $1
+                            """,
+                            loser_id,
+                            str(e)[:500],
+                        )
+
         return saved
 
 

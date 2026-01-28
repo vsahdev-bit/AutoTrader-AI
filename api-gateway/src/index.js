@@ -2266,51 +2266,41 @@ app.post('/api/v1/crawler-services/big-cap-losers/run', async (req, res) => {
  */
 app.get('/api/big-cap-losers/with-recommendations', async (req, res) => {
   try {
-    // Only show stocks from the latest crawl batch (within 5 minutes of the most recent crawl)
+    // Per spec, big_cap_losers stores only the latest snapshot (rows are replaced each run)
+    // and recommendation fields are stored inline on the same rows.
     const result = await pool.query(`
-      WITH latest_crawl AS (
-        SELECT MAX(crawled_at) as max_crawl_time
-        FROM big_cap_losers
-      )
-      SELECT DISTINCT ON (bcl.symbol)
-        bcl.id as loser_id,
-        bcl.symbol,
-        bcl.company_name,
-        bcl.current_price,
-        bcl.price_change,
-        bcl.percent_change,
-        bcl.market_cap,
-        bcl.market_cap_formatted,
-        bcl.volume,
-        bcl.trading_date,
-        bcl.crawled_at,
-        rec.id as recommendation_id,
-        rec.action,
-        rec.score,
-        rec.normalized_score,
-        rec.confidence,
-        rec.market_regime,
-        rec.regime_confidence,
-        rec.news_score,
-        rec.technical_score,
-        rec.explanation,
-        rec.generated_at as recommendation_generated_at
-      FROM big_cap_losers bcl
-      CROSS JOIN latest_crawl lc
-      LEFT JOIN LATERAL (
-        SELECT *
-        FROM big_cap_losers_recommendations r
-        WHERE r.symbol = bcl.symbol
-        ORDER BY r.generated_at DESC
-        LIMIT 1
-      ) rec ON true
-      WHERE bcl.market_cap >= 1000000000
-        AND bcl.crawled_at >= lc.max_crawl_time - INTERVAL '5 minutes'
-      ORDER BY bcl.symbol, bcl.crawled_at DESC
+      SELECT
+        id,
+        symbol,
+        company_name,
+        current_price,
+        price_change,
+        percent_change,
+        market_cap,
+        market_cap_formatted,
+        volume,
+        trading_date,
+        crawled_at,
+        action,
+        score,
+        normalized_score,
+        confidence,
+        market_regime,
+        regime_confidence,
+        news_score,
+        technical_score,
+        details_url,
+        top_news,
+        explanation,
+        recommendation_generated_at,
+        recommendation_error
+      FROM big_cap_losers
+      WHERE market_cap >= 1000000000
+      ORDER BY percent_change ASC
+      LIMIT 25
     `);
-    
-    const sorted = result.rows.sort((a, b) => a.percent_change - b.percent_change);
-    res.json(sorted);
+
+    res.json(result.rows);
   } catch (error) {
     console.error('Error fetching big cap losers with recommendations:', error);
     res.status(500).json({ error: 'Failed to fetch data' });
@@ -2323,7 +2313,12 @@ app.get('/api/big-cap-losers/with-recommendations', async (req, res) => {
  * Fetches from the existing stock_recommendations table if available
  */
 app.post('/api/big-cap-losers/generate-recommendations', async (req, res) => {
-  
+  // Deprecated: the crawler refresh performs recommendation generation inline.
+  return res.status(410).json({
+    success: false,
+    error: 'Deprecated. Use POST /api/big-cap-losers/refresh to crawl+generate recommendations.'
+  });
+
   try {
     // Get all current big cap losers
     const losersResult = await pool.query(`
@@ -2542,7 +2537,15 @@ app.post('/api/big-cap-losers/generate-recommendations', async (req, res) => {
  * GET /api/big-cap-losers/recommendation/:symbol
  * Get recommendation details for a specific big cap loser
  */
+// Deprecated: recommendation details are stored inline on big_cap_losers.explanation.
 app.get('/api/big-cap-losers/recommendation/:symbol', async (req, res) => {
+  return res.status(410).json({
+    success: false,
+    error: 'Deprecated. Fetch /api/big-cap-losers/with-recommendations and use the explanation field.'
+  });
+
+  // Legacy implementation below (kept for reference)
+  
   const symbol = req.params.symbol.toUpperCase();
   
   try {

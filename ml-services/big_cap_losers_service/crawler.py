@@ -1,6 +1,6 @@
-"""
-Big Cap Losers Crawler
-Crawls Yahoo Finance losers page and filters for big cap stocks (>$50B market cap)
+"""Big Cap Losers Crawler
+
+Crawls Yahoo Finance losers page and filters for stocks with market cap > $1B.
 """
 
 import asyncio
@@ -282,8 +282,9 @@ class BigCapLosersCrawler:
     
     async def crawl(self) -> List[StockLoser]:
         """
-        Crawl Yahoo Finance losers page and return big cap losers.
-        Returns stocks with market cap > $50B.
+        Crawl Yahoo Finance losers page and return losers.
+
+        Filters by min_market_cap and returns a list of StockLoser.
         """
         logger.info("Starting Big Cap Losers crawl...")
         
@@ -344,7 +345,7 @@ class BigCapLosersCrawler:
                 big_cap_losers.append(stock)
                 logger.info(f"Big cap loser: {symbol} ({cap_formatted}) - {loser['percent_change']:.2f}%")
         
-        logger.info(f"Found {len(big_cap_losers)} big cap losers (>$50B market cap)")
+        logger.info(f"Found {len(big_cap_losers)} losers (market cap >= {self.min_market_cap})")
         
         return big_cap_losers
 
