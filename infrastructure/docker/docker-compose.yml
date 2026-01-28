@@ -213,7 +213,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
       - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=dev-root-token
+      - VAULT_TOKEN=local-dev-token
       - DATA_CONNECTOR_INTERVAL=10800
       - LLM_CONNECTOR_INTERVAL=21600
     depends_on:
@@ -387,7 +387,7 @@ services:
       PORT: 3001
       DATABASE_URL: postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: dev-root-token
+      VAULT_TOKEN: local-dev-token
       REDIS_URL: redis://redis:6379
     ports:
       - "3001:3001"
