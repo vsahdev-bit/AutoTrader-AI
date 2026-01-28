@@ -7,6 +7,7 @@ on big_cap_losers rows.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 import aiohttp
@@ -54,6 +55,20 @@ async def fetch_recommendation(session: aiohttp.ClientSession, symbol: str) -> D
         return await resp.json()
 
 
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        # FastAPI typically serializes datetimes as ISO strings
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except Exception:
+            return None
+    return None
+
+
 def map_recommendation_to_row(rec: Dict[str, Any], api_base: str, symbol: str) -> Dict[str, Any]:
     """Map recommendation-engine response JSON into big_cap_losers columns."""
     explanation = rec.get("explanation")
@@ -84,5 +99,5 @@ def map_recommendation_to_row(rec: Dict[str, Any], api_base: str, symbol: str) -
         "details_url": f"{api_base}/big-cap-losers?symbol={symbol}",
         "top_news": top_news,
         "explanation": explanation,
-        "recommendation_generated_at": rec.get("generated_at"),
+        "recommendation_generated_at": _parse_dt(rec.get("generated_at")),
     }
