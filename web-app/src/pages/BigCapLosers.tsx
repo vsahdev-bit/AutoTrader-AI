@@ -72,10 +72,10 @@ const API_BASE = import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API
 async function fetchLatestLosers(): Promise<BigCapLoser[]> {
   try {
     // Use the endpoint that includes recommendations
-    const response = await fetch(`${API_BASE}/api/big-cap-losers/with-recommendations`)
+    const response = await fetch(`${API_BASE}/api/big-cap-losers/with-recommendations?t=${Date.now()}`, { cache: 'no-store' })
     if (!response.ok) {
       // Fallback to basic endpoint
-      const fallbackResponse = await fetch(`${API_BASE}/api/big-cap-losers/latest`)
+      const fallbackResponse = await fetch(`${API_BASE}/api/big-cap-losers/latest?t=${Date.now()}`, { cache: 'no-store' })
       if (!fallbackResponse.ok) return []
       return await fallbackResponse.json()
     }
@@ -89,9 +89,9 @@ async function fetchLatestLosers(): Promise<BigCapLoser[]> {
 async function fetchOver10Losers(): Promise<BigCapLoser[]> {
   try {
     // Fetch with recommendations and filter for over 10%
-    const response = await fetch(`${API_BASE}/api/big-cap-losers/with-recommendations`)
+    const response = await fetch(`${API_BASE}/api/big-cap-losers/with-recommendations?t=${Date.now()}`, { cache: 'no-store' })
     if (!response.ok) {
-      const fallbackResponse = await fetch(`${API_BASE}/api/big-cap-losers/over-10`)
+      const fallbackResponse = await fetch(`${API_BASE}/api/big-cap-losers/over-10?t=${Date.now()}`, { cache: 'no-store' })
       if (!fallbackResponse.ok) return []
       return await fallbackResponse.json()
     }
@@ -105,7 +105,7 @@ async function fetchOver10Losers(): Promise<BigCapLoser[]> {
 
 async function fetchSummary(): Promise<DailySummary | null> {
   try {
-    const response = await fetch(`${API_BASE}/api/big-cap-losers/summary`)
+    const response = await fetch(`${API_BASE}/api/big-cap-losers/summary?t=${Date.now()}`, { cache: 'no-store' })
     if (!response.ok) return null
     return await response.json()
   } catch (error) {
@@ -901,8 +901,9 @@ export default function BigCapLosers() {
       
       // Step 1: Trigger the crawler service to fetch fresh data AND generate recommendations
       // The backend handles both crawling and recommendation generation in one call
-      const response = await fetch(`${API_BASE}/api/big-cap-losers/refresh`, {
-        method: 'POST'
+      const response = await fetch(`${API_BASE}/api/big-cap-losers/refresh?t=${Date.now()}`, {
+        method: 'POST',
+        cache: 'no-store'
       })
       
       if (!response.ok) {

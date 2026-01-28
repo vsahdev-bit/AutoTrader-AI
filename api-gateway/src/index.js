@@ -2579,33 +2579,50 @@ app.post('/api/big-cap-losers/refresh', async (req, res) => {
   try {
     console.log('Starting Big Cap Losers refresh...');
     
-    // Try to trigger the crawler service via HTTP
-    // Use host.docker.internal when running in Docker to reach services on host machine
-    const crawlerServiceUrl = process.env.BIG_CAP_LOSERS_SERVICE_URL || 'http://host.docker.internal:8001';
-    
+    // Try to trigger the crawler service via HTTP.
+    // In Docker Compose, services reach each other via service DNS (e.g. http://big-cap-losers-service:8001).
+    // Some deployments may instead expose the crawler on the host (host.docker.internal).
+    const crawlerCandidates = [];
+    if (process.env.BIG_CAP_LOSERS_SERVICE_URL) {
+      crawlerCandidates.push(process.env.BIG_CAP_LOSERS_SERVICE_URL);
+    }
+    // Prefer docker network DNS name
+    crawlerCandidates.push('http://big-cap-losers-service:8001');
+    // Fallback (works on Docker Desktop / some environments)
+    crawlerCandidates.push('http://host.docker.internal:8001');
+
     let crawlerStats = null;
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
-      
-      const crawlerResponse = await fetch(`${crawlerServiceUrl}/refresh`, {
-        method: 'POST',
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (crawlerResponse.ok) {
-        const crawlerData = await crawlerResponse.json();
-        console.log('Crawler service response:', crawlerData);
-        // Capture stats from crawler service
-        crawlerStats = crawlerData.stats || null;
-      } else {
-        console.log('Crawler service returned non-OK status:', crawlerResponse.status);
+    let crawlerTriggered = false;
+
+    for (const baseUrl of crawlerCandidates) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+
+        const crawlerResponse = await fetch(`${baseUrl}/refresh`, {
+          method: 'POST',
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (crawlerResponse.ok) {
+          const crawlerData = await crawlerResponse.json();
+          console.log('Crawler service response:', crawlerData);
+          crawlerStats = crawlerData.stats || null;
+          crawlerTriggered = true;
+          break;
+        } else {
+          console.log(`Crawler service returned non-OK status from ${baseUrl}:`, crawlerResponse.status);
+        }
+      } catch (fetchError) {
+        console.log(`Could not reach crawler service at ${baseUrl}:`, fetchError.message);
       }
-    } catch (fetchError) {
-      // If the crawler service is not running, fall back to just fetching existing data
-      console.log('Could not reach crawler service, fetching existing data:', fetchError.message);
+    }
+
+    if (!crawlerTriggered) {
+      // If the crawler service is not running/reachable, fall back to just fetching existing data
+      console.log('Crawler service not reachable; returning existing DB data');
     }
     
     // Wait a moment for DB to update
