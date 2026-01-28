@@ -20,7 +20,7 @@ Usage:
 
 Environment Variables:
     VAULT_ADDR: Vault server address (default: http://localhost:8200)
-    VAULT_TOKEN: Vault authentication token (default: dev-root-token)
+    VAULT_TOKEN: Vault authentication token (default: local-dev-token)
 
 Supported Providers:
     - polygon: Polygon.io market data

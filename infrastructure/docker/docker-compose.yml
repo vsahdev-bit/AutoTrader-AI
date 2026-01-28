@@ -335,19 +335,40 @@ services:
   vault:
     image: hashicorp/vault:1.15
     container_name: autotrader-vault
+    command: ["vault", "server", "-config=/vault/config/vault.hcl"]
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
       VAULT_ADDR: http://127.0.0.1:8200
     ports:
       - "8200:8200"
     cap_add:
       - IPC_LOCK
+    volumes:
+      - vault_data:/vault/file
+      - ./vault/vault.hcl:/vault/config/vault.hcl:ro
     healthcheck:
-      test: ["CMD", "sh", "-c", "VAULT_ADDR=http://127.0.0.1:8200 vault status"]
+      test: ["CMD", "sh", "-c", "wget -q --spider http://127.0.0.1:8200/v1/sys/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+    networks:
+      - autotrader-network
+
+  # One-shot vault initializer/unsealer + policy/token bootstrap
+  vault-bootstrap:
+    image: hashicorp/vault:1.15
+    container_name: autotrader-vault-bootstrap
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN_ID: local-dev-token
+      INIT_FILE: /vault/file/init.json
+    volumes:
+      - vault_data:/vault/file
+      - ./vault/bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["sh", "/bootstrap.sh"]
+    restart: "no"
     networks:
       - autotrader-network
 
@@ -392,6 +413,7 @@ volumes:
   postgres_data:
   redis_data:
   clickhouse_data:
+  vault_data:
 
 networks:
   autotrader-network:
