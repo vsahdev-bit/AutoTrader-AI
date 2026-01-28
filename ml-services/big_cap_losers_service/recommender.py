@@ -24,9 +24,30 @@ def _safe_get(d: Optional[Dict[str, Any]], path: str):
 
 
 async def fetch_recommendation(session: aiohttp.ClientSession, symbol: str) -> Dict[str, Any]:
-    """Fetch recommendation from recommendation-engine for a symbol."""
+    """Fetch recommendation from recommendation-engine for a symbol.
+
+    Compatibility notes:
+    - Newer versions expose GET /recommendations/{symbol}?include_features=true
+    - Some deployments may only expose POST /generate/single
+
+    We try the GET endpoint first, and fall back to the POST endpoint on 404.
+    """
+    symbol = symbol.upper().strip()
+
+    # Preferred: single-symbol convenience endpoint
     url = f"http://recommendation-engine:8000/recommendations/{symbol}?include_features=true"
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+        if resp.status == 200:
+            return await resp.json()
+        text = await resp.text()
+        # Fall back if this service doesn't implement the GET route
+        if resp.status != 404:
+            raise RuntimeError(f"recommendation-engine HTTP {resp.status}: {text[:200]}")
+
+    # Fallback: on-demand single recommendation endpoint
+    url2 = "http://recommendation-engine:8000/generate/single"
+    payload = {"symbol": symbol, "save_to_db": False}
+    async with session.post(url2, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
         if resp.status != 200:
             text = await resp.text()
             raise RuntimeError(f"recommendation-engine HTTP {resp.status}: {text[:200]}")
@@ -59,7 +80,8 @@ def map_recommendation_to_row(rec: Dict[str, Any], api_base: str, symbol: str) -
         "regime_confidence": regime_conf,
         "news_score": news_score,
         "technical_score": technical_score,
-        "details_url": f"{api_base}/api/big-cap-losers/recommendation/{symbol}",
+        # UI can use this as an explanation link target (page can open a modal using explanation/top_news)
+        "details_url": f"{api_base}/big-cap-losers?symbol={symbol}",
         "top_news": top_news,
         "explanation": explanation,
         "recommendation_generated_at": rec.get("generated_at"),
