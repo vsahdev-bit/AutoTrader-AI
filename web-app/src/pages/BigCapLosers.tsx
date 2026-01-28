@@ -247,6 +247,7 @@ function LoadingSkeleton() {
                 <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Score</th>
                 <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Confidence</th>
                 <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Regime</th>
+                <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Top News</th>
                 <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Details</th>
               </tr>
             </thead>
@@ -342,6 +343,102 @@ function ConfidenceBar({ value, label }: { value?: number; label?: string }) {
       </div>
       <div className="w-full bg-gray-200 rounded-full h-1.5">
         <div className={`${color} h-1.5 rounded-full`} style={{ width: `${percentage}%` }}></div>
+      </div>
+    </div>
+  )
+}
+
+// Top News Modal
+function TopNewsModal({
+  isOpen,
+  onClose,
+  symbol,
+  articles,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  symbol: string
+  articles: any[]
+}) {
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto">
+      <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+        {/* Backdrop */}
+        <div className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onClick={onClose} />
+
+        {/* Modal */}
+        <div className="relative inline-block w-full max-w-2xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-4 sticky top-0 bg-white pb-2 border-b border-gray-100">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Top News - {symbol}</h3>
+              <p className="text-sm text-gray-500">Articles aggregated during recommendation generation</p>
+            </div>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {articles && articles.length > 0 ? (
+            <div className="space-y-3">
+              <div className="bg-gray-50 p-3 rounded-lg space-y-3 max-h-[70vh] overflow-y-auto border border-gray-200">
+                {articles.map((article, idx) => (
+                  <div key={idx} className="text-sm border-b border-gray-200 pb-3 last:border-0 last:pb-0">
+                    {article.url ? (
+                      <a
+                        href={article.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 hover:underline font-medium line-clamp-2 flex items-start gap-1"
+                      >
+                        {article.title}
+                        <svg className="w-3 h-3 flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                    ) : (
+                      <p className="text-gray-700 font-medium line-clamp-2">{article.title}</p>
+                    )}
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                      {article.source && (
+                        <span className="text-gray-500 text-xs bg-gray-100 px-2 py-0.5 rounded">{article.source}</span>
+                      )}
+                      {article.sentiment && (
+                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                          article.sentiment === 'positive' ? 'bg-green-100 text-green-700' :
+                          article.sentiment === 'negative' ? 'bg-red-100 text-red-700' :
+                          'bg-gray-200 text-gray-600'
+                        }`}>
+                          {article.sentiment}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={onClose}
+                className="w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <p className="text-gray-500 italic">No news articles available for this recommendation.</p>
+              <button
+                onClick={onClose}
+                className="mt-4 px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -559,7 +656,7 @@ function ExplanationModal({
           <div className="mt-6 pt-4 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
             <span>
               {loser.recommendation_generated_at 
-                ? `Generated: ${new Date(loser.recommendation_generated_at).toLocaleString()}`
+                ? `Generated: ${new Date(loser.recommendation_generated_at).toLocaleString('en-US', { timeZone: 'UTC' })} UTC`
                 : 'Recommendation pending'}
             </span>
             <span className="text-gray-400">
@@ -596,12 +693,14 @@ function LoserRow({
   loser, 
   rank, 
   onExplanationClick,
+  onTopNewsClick,
   onRegimeClick,
   regimeData
 }: { 
   loser: BigCapLoser
   rank: number
   onExplanationClick: (loser: BigCapLoser) => void
+  onTopNewsClick: (symbol: string, articles: any[]) => void
   onRegimeClick: (symbol: string) => void
   regimeData?: RegimeResponse | null
 }) {
@@ -664,6 +763,28 @@ function LoserRow({
         )}
       </td>
       <td className="px-3 py-3 text-center">
+        {(() => {
+          let explanation: any = loser.explanation
+          if (typeof explanation === 'string') {
+            try { explanation = JSON.parse(explanation) } catch { explanation = null }
+          }
+          const articles = explanation?.recent_articles || []
+          const hasArticles = Array.isArray(articles) && articles.length > 0
+
+          return hasArticles ? (
+            <button
+              onClick={() => onTopNewsClick(loser.symbol, articles)}
+              className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium"
+              title="View top news used in analysis"
+            >
+              View ({articles.length})
+            </button>
+          ) : (
+            <span className="text-gray-400 text-sm">-</span>
+          )
+        })()}
+      </td>
+      <td className="px-3 py-3 text-center">
         {loser.recommendation_id ? (
           <button
             onClick={() => onExplanationClick(loser)}
@@ -691,6 +812,9 @@ export default function BigCapLosers() {
   const [prevOver10Count, setPrevOver10Count] = useState<number>(0)
   const [selectedLoser, setSelectedLoser] = useState<BigCapLoser | null>(null)
   const [isExplanationModalOpen, setIsExplanationModalOpen] = useState(false)
+  const [isTopNewsModalOpen, setIsTopNewsModalOpen] = useState(false)
+  const [topNewsSymbol, setTopNewsSymbol] = useState<string | null>(null)
+  const [topNewsArticles, setTopNewsArticles] = useState<any[]>([])
   const [isGeneratingRecs, setIsGeneratingRecs] = useState(false)
   const [regimeData, setRegimeData] = useState<Record<string, RegimeResponse>>({})
   const [selectedRegimeSymbol, setSelectedRegimeSymbol] = useState<string | null>(null)
@@ -871,6 +995,12 @@ export default function BigCapLosers() {
   const handleExplanationClick = (loser: BigCapLoser) => {
     setSelectedLoser(loser)
     setIsExplanationModalOpen(true)
+  }
+
+  const handleTopNewsClick = (symbol: string, articles: any[]) => {
+    setTopNewsSymbol(symbol)
+    setTopNewsArticles(articles)
+    setIsTopNewsModalOpen(true)
   }
 
   const handleRegimeClick = async (symbol: string) => {
@@ -1123,6 +1253,7 @@ export default function BigCapLosers() {
                     <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Score</th>
                     <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Confidence</th>
                     <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Regime</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Top News</th>
                     <th className="px-3 py-3 text-center text-xs font-semibold text-gray-600 bg-blue-50">Details</th>
                   </tr>
                 </thead>
@@ -1133,6 +1264,7 @@ export default function BigCapLosers() {
                       loser={loser} 
                       rank={index + 1} 
                       onExplanationClick={handleExplanationClick}
+                      onTopNewsClick={handleTopNewsClick}
                       onRegimeClick={handleRegimeClick}
                       regimeData={regimeData[loser.symbol]}
                     />
@@ -1170,6 +1302,18 @@ export default function BigCapLosers() {
             <p className="text-xs text-gray-500 mt-2">Click to analyze all stocks with our AI recommendation engine</p>
           </div>
         )}
+
+        {/* Top News Modal */}
+        <TopNewsModal
+          isOpen={isTopNewsModalOpen}
+          onClose={() => {
+            setIsTopNewsModalOpen(false)
+            setTopNewsSymbol(null)
+            setTopNewsArticles([])
+          }}
+          symbol={topNewsSymbol || ''}
+          articles={topNewsArticles}
+        />
 
         {/* Explanation Modal */}
         <ExplanationModal

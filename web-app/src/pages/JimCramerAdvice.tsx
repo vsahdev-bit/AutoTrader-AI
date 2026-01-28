@@ -221,11 +221,13 @@ export default function JimCramerAdvice() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-blue-100 text-sm">
-                      {new Date(summary.summary_date).toLocaleDateString('en-US', {
+                      {/* Parse date as UTC to avoid timezone offset issues */}
+                      {new Date(summary.summary_date + (summary.summary_date.includes('T') ? '' : 'T12:00:00Z')).toLocaleDateString('en-US', {
                         weekday: 'long',
                         year: 'numeric',
                         month: 'long',
                         day: 'numeric',
+                        timeZone: 'UTC',
                       })}
                     </p>
                     <h2 className="text-xl font-bold text-white mt-1">{summary.summary_title}</h2>
@@ -427,7 +429,7 @@ export default function JimCramerAdvice() {
                             <div className="flex-shrink-0 text-right">
                               <span className="text-xs text-gray-500">{article.source_name}</span>
                               <p className="text-xs text-gray-400">
-                                {new Date(article.published_at).toLocaleDateString()}
+                                {new Date(article.published_at).toLocaleDateString('en-US', { timeZone: 'UTC' })}
                               </p>
                             </div>
                           </div>
@@ -443,7 +445,7 @@ export default function JimCramerAdvice() {
             
             {/* Last Updated */}
             <p className="text-center text-sm text-gray-400 mt-6">
-              Last updated: {new Date(summary.generated_at).toLocaleString()}
+              Last updated: {new Date(summary.generated_at).toLocaleString('en-US', { timeZone: 'UTC' })} UTC
             </p>
           </>
         )}

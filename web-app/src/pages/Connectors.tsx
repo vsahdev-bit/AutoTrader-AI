@@ -958,7 +958,7 @@ export default function Connectors() {
             {/* Last Run Info */}
             {jimCramerService?.lastRunAt && (
               <div className="mt-2 text-orange-100 text-xs">
-                Last run: {new Date(jimCramerService.lastRunAt).toLocaleString()} • 
+                Last run: {new Date(jimCramerService.lastRunAt).toLocaleString('en-US', { timeZone: 'UTC' })} UTC • 
                 {jimCramerService.articlesFound} articles found • 
                 Status: <span className={jimCramerService.status === 'connected' ? 'text-green-200' : 'text-red-200'}>
                   {jimCramerService.status === 'connected' ? 'Success' : 'Error'}
@@ -1254,7 +1254,7 @@ export default function Connectors() {
             {/* Last Run Info */}
             {bigCapLosersService?.lastRunAt && (
               <div className="mt-2 text-red-100 text-xs">
-                Last run: {new Date(bigCapLosersService.lastRunAt).toLocaleString()} • 
+                Last run: {new Date(bigCapLosersService.lastRunAt).toLocaleString('en-US', { timeZone: 'UTC' })} UTC • 
                 {bigCapLosersService.bigCapLosersFound} losers found ({bigCapLosersService.overThresholdFound} over 10%) • 
                 Status: <span className={bigCapLosersService.status === 'connected' ? 'text-green-200' : 'text-red-200'}>
                   {bigCapLosersService.status === 'connected' ? 'Success' : 'Error'}

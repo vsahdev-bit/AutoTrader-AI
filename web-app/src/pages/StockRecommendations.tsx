@@ -53,6 +53,104 @@ function Tooltip({ children, text }: { children: React.ReactNode; text: string }
 /**
  * Explanation Modal Component - Enhanced to show all recommendation details
  */
+function TopNewsModal({
+  isOpen,
+  onClose,
+  symbol,
+  articles,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  symbol: string
+  articles: any[]
+}) {
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto">
+      <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+        {/* Backdrop */}
+        <div className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75" onClick={onClose} />
+
+        {/* Modal */}
+        <div className="relative inline-block w-full max-w-2xl p-6 my-8 overflow-hidden text-left align-middle transition-all transform bg-white shadow-xl rounded-2xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-4 sticky top-0 bg-white pb-2 border-b border-gray-100">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900">Top News - {symbol}</h3>
+              <p className="text-sm text-gray-500">Articles aggregated during recommendation generation</p>
+            </div>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {articles && articles.length > 0 ? (
+            <div className="space-y-3">
+              <div className="bg-gray-50 p-3 rounded-lg space-y-3 max-h-[70vh] overflow-y-auto border border-gray-200">
+                {articles.map((article, idx) => (
+                  <div key={idx} className="text-sm border-b border-gray-200 pb-3 last:border-0 last:pb-0">
+                    {article.url ? (
+                      <a
+                        href={article.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 hover:underline font-medium line-clamp-2 flex items-start gap-1"
+                      >
+                        {article.title}
+                        <svg className="w-3 h-3 flex-shrink-0 mt-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                    ) : (
+                      <p className="text-gray-700 font-medium line-clamp-2">{article.title}</p>
+                    )}
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                      {article.source && (
+                        <span className="text-gray-500 text-xs bg-gray-100 px-2 py-0.5 rounded">{article.source}</span>
+                      )}
+                      {article.sentiment && (
+                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                          article.sentiment === 'positive' ? 'bg-green-100 text-green-700' :
+                          article.sentiment === 'negative' ? 'bg-red-100 text-red-700' :
+                          'bg-gray-200 text-gray-600'
+                        }`}>
+                          {article.sentiment}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={onClose}
+                className="w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <p className="text-gray-500 italic">No news articles available for this recommendation.</p>
+              <button
+                onClick={onClose}
+                className="mt-4 px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Explanation Modal Component - Enhanced to show all recommendation details
+ */
 function ExplanationModal({ 
   isOpen, 
   onClose, 
@@ -380,7 +478,7 @@ function formatDate(dateString: string | null): string {
   if (!dateString) return '-'
   const date = new Date(dateString)
   return date.toLocaleString('en-US', {
-    timeZone: 'America/Los_Angeles',
+    timeZone: 'UTC',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -487,6 +585,8 @@ function StockRecommendationTable({
   // Modal state
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedExplanation, setSelectedExplanation] = useState<StockRecommendationHistory['explanation'] | null>(null)
+  const [newsModalOpen, setNewsModalOpen] = useState(false)
+  const [selectedArticles, setSelectedArticles] = useState<any[]>([])
   
   // Regime state
   const [regime, setRegime] = useState<RegimeResponse | null>(null)
@@ -512,6 +612,11 @@ function StockRecommendationTable({
   const openExplanation = (explanation: StockRecommendationHistory['explanation'] | null) => {
     setSelectedExplanation(explanation)
     setModalOpen(true)
+  }
+
+  const openTopNews = (articles: any[] = []) => {
+    setSelectedArticles(articles)
+    setNewsModalOpen(true)
   }
   
   return (
@@ -808,8 +913,8 @@ function StockRecommendationTable({
       
       {/* Recommendations table */}
       {!loading && !error && recommendations.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
+        <div>
+          <table className="w-full table-auto divide-y divide-gray-200">
             <thead className="bg-gray-50 relative z-10">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -840,6 +945,11 @@ function StockRecommendationTable({
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   <Tooltip text="Individual component scores: News (sentiment analysis), Momentum (sentiment trend), Trend (price direction using moving averages), Tech Mom. (RSI, MACD signals). Each ranges from -1 (bearish) to +1 (bullish).">
                     Component Scores
+                  </Tooltip>
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <Tooltip text="View the top news articles aggregated by the recommendation engine for this run.">
+                    Top News
                   </Tooltip>
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -906,12 +1016,27 @@ function StockRecommendationTable({
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="space-y-1 min-w-48">
+                      <div className="space-y-1">
                         <ScoreBar value={rec.newsSentimentScore} label="News" />
                         <ScoreBar value={rec.newsMomentumScore} label="Momentum" />
                         <ScoreBar value={rec.technicalTrendScore} label="Trend" />
                         <ScoreBar value={rec.technicalMomentumScore} label="Tech Mom." />
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <button
+                        onClick={() => openTopNews(rec.explanation?.recent_articles || [])}
+                        className={`text-sm font-medium ${
+                          rec.explanation?.recent_articles && rec.explanation.recent_articles.length > 0
+                            ? 'text-blue-600 hover:text-blue-800 hover:underline'
+                            : 'text-gray-300 cursor-not-allowed'
+                        }`}
+                        disabled={!rec.explanation?.recent_articles || rec.explanation.recent_articles.length === 0}
+                      >
+                        {rec.explanation?.recent_articles && rec.explanation.recent_articles.length > 0
+                          ? `View (${rec.explanation.recent_articles.length})`
+                          : 'None'}
+                      </button>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <button
@@ -929,6 +1054,14 @@ function StockRecommendationTable({
         </div>
       )}
       
+      {/* Top News Modal */}
+      <TopNewsModal
+        isOpen={newsModalOpen}
+        onClose={() => setNewsModalOpen(false)}
+        symbol={symbol}
+        articles={selectedArticles}
+      />
+
       {/* Explanation Modal */}
       <ExplanationModal
         isOpen={modalOpen}
@@ -1179,11 +1312,11 @@ export default function StockRecommendations() {
       </div>
       
       {/* Main content with sidebar layout */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex gap-6">
           {/* Left Sidebar - Stock Navigation */}
           {!loading && !error && watchlist.length > 0 && (
-            <aside className="hidden lg:block w-56 flex-shrink-0">
+            <aside className="hidden lg:block w-48 flex-shrink-0">
               <div className="sticky top-[160px] bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
                   <h3 className="text-sm font-semibold text-gray-700">Watchlist</h3>

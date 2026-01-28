@@ -1341,6 +1341,72 @@ class RecommendationFlowService:
         
         return results
     
+    async def generate_single_recommendation(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Generate a recommendation for a single symbol on-demand.
+        
+        This is used for the "Get Recommendation" feature where users can
+        look up any stock without adding it to their watchlist.
+        
+        Args:
+            symbol: Stock ticker symbol
+            
+        Returns:
+            Dict with recommendation data or None if generation fails
+        """
+        symbol = symbol.upper().strip()
+        logger.info(f"Generating on-demand recommendation for {symbol}")
+        
+        try:
+            # Ensure engine is initialized
+            if self.engine is None:
+                from main import RecommendationEngine
+                self.engine = RecommendationEngine(enable_regime=True)
+                await self.engine.initialize()
+            
+            # Generate recommendation using the engine
+            recommendation = await self.engine.generate_recommendation(
+                symbol=symbol,
+                include_features=True,
+            )
+            
+            # Convert recommendation to dict
+            def _maybe_dict(obj):
+                try:
+                    if obj is None:
+                        return None
+                    if hasattr(obj, 'dict'):
+                        return obj.dict()
+                    if hasattr(obj, '__dict__'):
+                        return dict(obj.__dict__)
+                    return obj
+                except Exception:
+                    return None
+
+            return {
+                "symbol": symbol,
+                "action": recommendation.action,
+                "confidence": recommendation.confidence,
+                "normalized_score": recommendation.normalized_score,
+                "score": recommendation.score,
+                "news_sentiment_score": recommendation.news_sentiment_score,
+                "news_momentum_score": recommendation.news_momentum_score,
+                "technical_trend_score": recommendation.technical_trend_score,
+                "technical_momentum_score": recommendation.technical_momentum_score,
+                "price_at_recommendation": recommendation.price_at_recommendation,
+                "rsi": recommendation.rsi,
+                "macd_histogram": recommendation.macd_histogram,
+                "explanation": recommendation.explanation,
+                # Include regime + signal weights so the UI can match StockRecommendations
+                "regime": _maybe_dict(getattr(recommendation, 'regime', None)),
+                "signal_weights": _maybe_dict(getattr(recommendation, 'signal_weights', None)),
+                "generated_at": recommendation.generated_at.isoformat() if recommendation.generated_at else datetime.now(timezone.utc).isoformat(),
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating on-demand recommendation for {symbol}: {e}")
+            return None
+    
     async def _persist_recommendation(
         self, 
         symbol: str, 
@@ -1669,10 +1735,10 @@ async def get_recommendations_history(
                 'normalizedScore': float(row['normalized_score']) if row['normalized_score'] else None,
                 'confidence': float(row['confidence']) if row['confidence'] else None,
                 'priceAtRecommendation': float(row['price_at_recommendation']) if row['price_at_recommendation'] else None,
-                'newsSentimentScore': float(row['news_sentiment_score']) if row['news_sentiment_score'] else None,
-                'newsMomentumScore': float(row['news_momentum_score']) if row['news_momentum_score'] else None,
-                'technicalTrendScore': float(row['technical_trend_score']) if row['technical_trend_score'] else None,
-                'technicalMomentumScore': float(row['technical_momentum_score']) if row['technical_momentum_score'] else None,
+                'newsSentimentScore': float(row['news_sentiment_score']) if row['news_sentiment_score'] is not None else None,
+                'newsMomentumScore': float(row['news_momentum_score']) if row['news_momentum_score'] is not None else None,
+                'technicalTrendScore': float(row['technical_trend_score']) if row['technical_trend_score'] is not None else None,
+                'technicalMomentumScore': float(row['technical_momentum_score']) if row['technical_momentum_score'] is not None else None,
                 'rsi': float(row['rsi']) if row['rsi'] else None,
                 'macdHistogram': float(row['macd_histogram']) if row['macd_histogram'] else None,
                 'priceVsSma20': float(row['price_vs_sma20']) if row['price_vs_sma20'] else None,
@@ -1784,6 +1850,78 @@ async def run_http_server():
             logger.error(f"Error generating recommendations: {e}")
             return JSONResponse(
                 content={"success": False, "error": str(e)},
+                status_code=500
+            )
+    
+    @app.post("/generate/single")
+    async def generate_single_recommendation(request: dict):
+        """
+        Generate an on-demand recommendation for a single stock.
+        
+        This endpoint is used for instant recommendations without saving to database.
+        Useful for one-off lookups and the "Get Recommendation" feature.
+        
+        Request body:
+            symbol: Stock ticker symbol (required)
+            company_name: Company name (optional)
+            save_to_db: Whether to save to database (default: False)
+        
+        Returns:
+            Recommendation object with all scores and explanation
+        """
+        symbol = request.get("symbol", "").upper().strip()
+        company_name = request.get("company_name", symbol)
+        save_to_db = request.get("save_to_db", False)
+        
+        if not symbol:
+            return JSONResponse(
+                content={"error": "symbol is required"},
+                status_code=400
+            )
+        
+        logger.info(f"On-demand recommendation requested for {symbol}")
+        
+        try:
+            # Generate recommendation using the service
+            recommendation = await service.generate_single_recommendation(symbol)
+            
+            if recommendation is None:
+                return JSONResponse(
+                    content={"error": f"Failed to generate recommendation for {symbol}"},
+                    status_code=500
+                )
+            
+            # Optionally save to database
+            if save_to_db and service.db_pool:
+                try:
+                    await service.save_recommendation(recommendation)
+                    logger.info(f"Saved recommendation for {symbol} to database")
+                except Exception as e:
+                    logger.warning(f"Failed to save recommendation to database: {e}")
+            
+            # Return the recommendation
+            return {
+                "symbol": symbol,
+                "company_name": company_name,
+                "action": recommendation.get("action", "HOLD"),
+                "confidence": recommendation.get("confidence", 0),
+                "normalized_score": recommendation.get("normalized_score", 0),
+                "score": recommendation.get("score", 0),
+                "news_sentiment_score": recommendation.get("news_sentiment_score"),
+                "news_momentum_score": recommendation.get("news_momentum_score"),
+                "technical_trend_score": recommendation.get("technical_trend_score"),
+                "technical_momentum_score": recommendation.get("technical_momentum_score"),
+                "price_at_recommendation": recommendation.get("price_at_recommendation"),
+                "rsi": recommendation.get("rsi"),
+                "macd_histogram": recommendation.get("macd_histogram"),
+                "explanation": recommendation.get("explanation"),
+                "generated_at": recommendation.get("generated_at", datetime.now(timezone.utc).isoformat()),
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating recommendation for {symbol}: {e}")
+            return JSONResponse(
+                content={"error": str(e)},
                 status_code=500
             )
     
@@ -1933,6 +2071,64 @@ async def run_with_api():
                 content={"success": True, "message": "Recommendation generation started"},
                 status_code=202
             )
+        
+        def _sanitize_for_json(obj):
+            """Recursively replace NaN/Inf with None so JSON serialization never fails."""
+            import math
+            if obj is None:
+                return None
+            if isinstance(obj, float):
+                return obj if math.isfinite(obj) else None
+            if isinstance(obj, dict):
+                return {k: _sanitize_for_json(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_sanitize_for_json(v) for v in obj]
+            return obj
+
+        @app.post("/generate/single")
+        async def generate_single(request: dict):
+            """Generate on-demand recommendation for a single stock."""
+            symbol = request.get("symbol", "").upper().strip()
+            company_name = request.get("company_name", symbol)
+            
+            if not symbol:
+                return JSONResponse(content={"error": "symbol is required"}, status_code=400)
+            
+            logger.info(f"On-demand recommendation requested for {symbol}")
+            
+            try:
+                recommendation = await service.generate_single_recommendation(symbol)
+                
+                if recommendation is None:
+                    return JSONResponse(
+                        content={"error": f"Failed to generate recommendation for {symbol}"},
+                        status_code=500
+                    )
+                
+                payload = {
+                    "symbol": symbol,
+                    "company_name": company_name,
+                    "action": recommendation.get("action", "HOLD"),
+                    "confidence": recommendation.get("confidence", 0),
+                    "normalized_score": recommendation.get("normalized_score", 0),
+                    # Include raw score for parity with stored recommendations
+                    "score": recommendation.get("score"),
+                    "news_sentiment_score": recommendation.get("news_sentiment_score"),
+                    "news_momentum_score": recommendation.get("news_momentum_score"),
+                    "technical_trend_score": recommendation.get("technical_trend_score"),
+                    # Do not default to 0 if missing; allow null to show "-" in UI
+                    "technical_momentum_score": recommendation.get("technical_momentum_score"),
+                    "price_at_recommendation": recommendation.get("price_at_recommendation"),
+                    "explanation": recommendation.get("explanation"),
+                    # Pass through regime + signal weights if available
+                    "regime": recommendation.get("regime"),
+                    "signal_weights": recommendation.get("signal_weights"),
+                    "generated_at": recommendation.get("generated_at"),
+                }
+                return _sanitize_for_json(payload)
+            except Exception as e:
+                logger.error(f"Error generating recommendation for {symbol}: {e}")
+                return JSONResponse(content={"error": str(e)}, status_code=500)
         
         @app.get("/regime/{symbol}")
         async def get_regime_api(symbol: str):

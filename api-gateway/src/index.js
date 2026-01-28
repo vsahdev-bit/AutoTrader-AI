@@ -326,6 +326,186 @@ app.get('/api/stocks/search', async (req, res) => {
   }
 });
 
+// =============================================================================
+// Stock Quotes API - Real-time price data from Yahoo Finance
+// =============================================================================
+
+/**
+ * Get real-time quotes for multiple symbols.
+ * Uses Yahoo Finance v8/finance/chart endpoint which doesn't require authentication.
+ * 
+ * @route GET /api/v1/stocks/quotes
+ * @query {string} symbols - Comma-separated list of stock symbols (e.g., "AAPL,MSFT,GOOGL")
+ * @returns {Object} quotes - Map of symbol to quote data
+ */
+app.get('/api/v1/stocks/quotes', async (req, res) => {
+  const { symbols } = req.query;
+  
+  if (!symbols) {
+    return res.status(400).json({ error: 'symbols parameter is required' });
+  }
+  
+  const symbolList = symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  
+  if (symbolList.length === 0) {
+    return res.status(400).json({ error: 'No valid symbols provided' });
+  }
+  
+  // Limit to 50 symbols per request to avoid rate limiting
+  if (symbolList.length > 50) {
+    return res.status(400).json({ error: 'Maximum 50 symbols per request' });
+  }
+  
+  try {
+    const quotes = {};
+    const errors = [];
+    
+    // Fetch quotes in parallel with concurrency limit
+    const fetchQuote = async (symbol) => {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1d`;
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+          },
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const chart = data?.chart?.result?.[0];
+        
+        if (!chart) {
+          throw new Error('No data returned');
+        }
+        
+        const meta = chart.meta || {};
+        const quote = chart.indicators?.quote?.[0] || {};
+        
+        const currentPrice = meta.regularMarketPrice;
+        const prevClose = meta.previousClose || meta.chartPreviousClose;
+        
+        quotes[symbol] = {
+          symbol,
+          price: currentPrice,
+          previousClose: prevClose,
+          open: quote.open?.[quote.open.length - 1] ?? null,
+          high: quote.high?.[quote.high.length - 1] ?? null,
+          low: quote.low?.[quote.low.length - 1] ?? null,
+          volume: quote.volume?.[quote.volume.length - 1] ?? null,
+          change: currentPrice && prevClose ? currentPrice - prevClose : null,
+          changePercent: currentPrice && prevClose ? ((currentPrice - prevClose) / prevClose) * 100 : null,
+          fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ?? null,
+          fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? null,
+          marketCap: meta.marketCap ?? null,
+          currency: meta.currency || 'USD',
+          exchange: meta.exchangeName || meta.exchange,
+          lastUpdated: new Date().toISOString(),
+        };
+      } catch (error) {
+        console.error(`Failed to fetch quote for ${symbol}:`, error.message);
+        errors.push({ symbol, error: error.message });
+        quotes[symbol] = {
+          symbol,
+          price: null,
+          error: error.message,
+        };
+      }
+    };
+    
+    // Process in batches of 10 to avoid overwhelming the API
+    const batchSize = 10;
+    for (let i = 0; i < symbolList.length; i += batchSize) {
+      const batch = symbolList.slice(i, i + batchSize);
+      await Promise.all(batch.map(fetchQuote));
+      
+      // Small delay between batches to be respectful of rate limits
+      if (i + batchSize < symbolList.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    
+    res.json({
+      quotes,
+      fetchedAt: new Date().toISOString(),
+      successCount: Object.values(quotes).filter(q => q.price !== null).length,
+      errorCount: errors.length,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error) {
+    console.error('Error fetching stock quotes:', error);
+    res.status(500).json({ error: 'Failed to fetch stock quotes' });
+  }
+});
+
+/**
+ * Get real-time quote for a single symbol.
+ * 
+ * @route GET /api/v1/stocks/quotes/:symbol
+ * @param {string} symbol - Stock symbol (e.g., "AAPL")
+ * @returns {Object} quote data
+ */
+app.get('/api/v1/stocks/quotes/:symbol', async (req, res) => {
+  const { symbol } = req.params;
+  
+  if (!symbol) {
+    return res.status(400).json({ error: 'symbol parameter is required' });
+  }
+  
+  const upperSymbol = symbol.trim().toUpperCase();
+  
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${upperSymbol}?interval=1d&range=1d`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      return res.status(response.status).json({ error: `Failed to fetch quote: HTTP ${response.status}` });
+    }
+    
+    const data = await response.json();
+    const chart = data?.chart?.result?.[0];
+    
+    if (!chart) {
+      return res.status(404).json({ error: `No data found for symbol: ${upperSymbol}` });
+    }
+    
+    const meta = chart.meta || {};
+    const quote = chart.indicators?.quote?.[0] || {};
+    
+    const currentPrice = meta.regularMarketPrice;
+    const prevClose = meta.previousClose || meta.chartPreviousClose;
+    
+    res.json({
+      symbol: upperSymbol,
+      price: currentPrice,
+      previousClose: prevClose,
+      open: quote.open?.[quote.open.length - 1] ?? null,
+      high: quote.high?.[quote.high.length - 1] ?? null,
+      low: quote.low?.[quote.low.length - 1] ?? null,
+      volume: quote.volume?.[quote.volume.length - 1] ?? null,
+      change: currentPrice && prevClose ? currentPrice - prevClose : null,
+      changePercent: currentPrice && prevClose ? ((currentPrice - prevClose) / prevClose) * 100 : null,
+      fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ?? null,
+      fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? null,
+      marketCap: meta.marketCap ?? null,
+      currency: meta.currency || 'USD',
+      exchange: meta.exchangeName || meta.exchange,
+      lastUpdated: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error(`Error fetching quote for ${symbol}:`, error);
+    res.status(500).json({ error: 'Failed to fetch stock quote' });
+  }
+});
+
 // Complete onboarding
 app.post('/api/onboarding/:userId/complete', async (req, res) => {
   const { userId } = req.params;
@@ -1687,7 +1867,7 @@ app.get('/api/jim-cramer/summary/latest', async (req, res) => {
 
 /**
  * GET /api/jim-cramer/mentions/today
- * Get today's stock mentions from Jim Cramer articles
+ * Get recent stock mentions from Jim Cramer articles (last 7 days)
  */
 app.get('/api/jim-cramer/mentions/today', async (req, res) => {
   try {
@@ -1705,7 +1885,7 @@ app.get('/api/jim-cramer/mentions/today', async (req, res) => {
         a.published_at
       FROM jim_cramer_stock_mentions m
       JOIN jim_cramer_articles a ON m.article_id = a.id
-      WHERE a.published_at >= CURRENT_DATE
+      WHERE a.published_at >= CURRENT_DATE - INTERVAL '7 days'
       ORDER BY a.published_at DESC, m.sentiment_score DESC
       LIMIT 50
     `);
@@ -2465,6 +2645,81 @@ app.post('/api/big-cap-losers/refresh', async (req, res) => {
   } catch (error) {
     console.error('Error refreshing Big Cap Losers:', error);
     res.status(500).json({ error: 'Failed to refresh data' });
+  }
+});
+
+// =============================================================================
+// On-Demand Recommendation API
+// =============================================================================
+
+/**
+ * POST /api/v1/recommendations/on-demand
+ * Generate a recommendation for a single stock on-demand without saving to database.
+ * This calls the recommendation engine directly and returns the result.
+ */
+app.post('/api/v1/recommendations/on-demand', async (req, res) => {
+  const { symbol, companyName } = req.body;
+  
+  if (!symbol) {
+    return res.status(400).json({ error: 'symbol is required' });
+  }
+  
+  const upperSymbol = symbol.trim().toUpperCase();
+  console.log(`On-demand recommendation requested for ${upperSymbol}`);
+  
+  try {
+    // Call the recommendation engine's on-demand endpoint
+    const engineResponse = await fetch('http://recommendation-engine:8000/generate/single', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        symbol: upperSymbol,
+        company_name: companyName || upperSymbol,
+        save_to_db: false  // Don't save to database
+      }),
+      timeout: 60000, // 60 second timeout
+    });
+    
+    if (!engineResponse.ok) {
+      const errorText = await engineResponse.text();
+      console.error(`Recommendation engine error for ${upperSymbol}:`, errorText);
+      return res.status(engineResponse.status).json({ 
+        error: `Failed to generate recommendation: ${errorText}` 
+      });
+    }
+    
+    const result = await engineResponse.json();
+    
+    // Format the response to match the frontend expectations
+    res.json({
+      symbol: upperSymbol,
+      companyName: companyName || result.company_name || upperSymbol,
+      action: result.action || 'HOLD',
+      confidence: result.confidence || 0,
+      normalizedScore: result.normalized_score || result.normalizedScore || 0,
+      // Include raw score for parity with recommendations table
+      score: result.score ?? null,
+      newsSentimentScore: result.news_sentiment_score ?? result.newsSentimentScore ?? null,
+      newsMomentumScore: result.news_momentum_score ?? result.newsMomentumScore ?? null,
+      technicalTrendScore: result.technical_trend_score ?? result.technicalTrendScore ?? null,
+      technicalMomentumScore: result.technical_momentum_score ?? result.technicalMomentumScore ?? null,
+      priceAtRecommendation: result.price_at_recommendation ?? result.priceAtRecommendation ?? null,
+      explanation: result.explanation || null,
+      // Include regime + signal weights so UI can show full details
+      regime: result.regime ?? null,
+      signalWeights: result.signal_weights ?? result.signalWeights ?? null,
+      generatedAt: result.generated_at || new Date().toISOString(),
+      // Provide a stable-ish id for table row rendering
+      id: `${upperSymbol}-${Date.now()}`, 
+    });
+    
+  } catch (error) {
+    console.error(`Error generating on-demand recommendation for ${upperSymbol}:`, error);
+    res.status(500).json({ 
+      error: 'Failed to generate recommendation. Please try again.' 
+    });
   }
 });
 

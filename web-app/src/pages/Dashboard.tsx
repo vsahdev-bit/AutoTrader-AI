@@ -5,7 +5,7 @@ import Header from '../components/Header'
 import OnboardingStatusCard from '../components/OnboardingStatusCard'
 import TradeConfirmationModal from '../components/TradeConfirmationModal'
 import { getOnboardingData, WatchlistStock, BrokerageConnection, TradeDetails } from '../services/onboardingApi'
-import { recommendationApi } from '../services/api'
+import { recommendationApi, stockQuotesApi, StockQuote } from '../services/api'
 
 interface StockDisplay {
   id: string
@@ -15,25 +15,14 @@ interface StockDisplay {
   action: 'BUY' | 'SELL' | 'HOLD'
   confidence: number
   price: number
+  priceChange: number | null
+  priceChangePercent: number | null
+  priceLoading: boolean
+  hasRecommendation: boolean
 }
 
-// Generate mock AI data for stocks
-function generateMockAIData(stock: WatchlistStock): StockDisplay {
-  const actions: ('BUY' | 'SELL' | 'HOLD')[] = ['BUY', 'SELL', 'HOLD']
-  const action = actions[Math.floor(Math.random() * 3)]
-  const confidence = 0.6 + Math.random() * 0.35 // 60-95%
-  const price = 50 + Math.random() * 400 // $50-$450
-  
-  return {
-    id: stock.id,
-    symbol: stock.symbol,
-    company_name: stock.company_name,
-    exchange: stock.exchange,
-    action,
-    confidence,
-    price,
-  }
-}
+type SortField = 'symbol' | 'action' | null
+type SortDirection = 'asc' | 'desc'
 
 export default function Dashboard() {
   const [stocks, setStocks] = useState<StockDisplay[]>([])
@@ -42,43 +31,248 @@ export default function Dashboard() {
   const [brokerageConnections, setBrokerageConnections] = useState<BrokerageConnection[]>([])
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false)
   const [selectedTrade, setSelectedTrade] = useState<TradeDetails | null>(null)
+  const [sortField, setSortField] = useState<SortField>(null)
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const { user } = useAuth()
   const navigate = useNavigate()
+  
+  const [isPriceRefreshing, setIsPriceRefreshing] = useState(false)
+
+  // Handle column sorting
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      // Toggle direction if same field
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      // New field, start with ascending
+      setSortField(field)
+      setSortDirection('asc')
+    }
+  }
+
+  // Sort stocks based on current sort settings
+  const sortedStocks = [...stocks].sort((a, b) => {
+    if (!sortField) return 0
+    
+    let comparison = 0
+    if (sortField === 'symbol') {
+      comparison = a.symbol.localeCompare(b.symbol)
+    } else if (sortField === 'action') {
+      // Sort order: BUY > SELL > HOLD > Pending
+      const actionOrder = { 'BUY': 0, 'SELL': 1, 'HOLD': 2 }
+      const aOrder = a.hasRecommendation ? actionOrder[a.action] : 3
+      const bOrder = b.hasRecommendation ? actionOrder[b.action] : 3
+      comparison = aOrder - bOrder
+    }
+    
+    return sortDirection === 'asc' ? comparison : -comparison
+  })
+
+  // Sort indicator component
+  const SortIndicator = ({ field }: { field: SortField }) => {
+    if (sortField !== field) {
+      return (
+        <svg className="w-4 h-4 text-gray-400 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+        </svg>
+      )
+    }
+    return sortDirection === 'asc' ? (
+      <svg className="w-4 h-4 text-blue-600 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+      </svg>
+    ) : (
+      <svg className="w-4 h-4 text-blue-600 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+      </svg>
+    )
+  }
 
   const userId = user?.dbId || user?.sub || ''
 
-  // Load recommendations from database
+  // Refresh prices for all stocks in the watchlist
+  const handleRefreshPrices = useCallback(async () => {
+    if (stocks.length === 0 || isPriceRefreshing) return
+    
+    setIsPriceRefreshing(true)
+    
+    // Set all stocks to loading state
+    setStocks(prevStocks => 
+      prevStocks.map(stock => ({
+        ...stock,
+        priceLoading: true,
+      }))
+    )
+    
+    try {
+      const symbols = stocks.map(s => s.symbol)
+      const response = await stockQuotesApi.getQuotes(symbols)
+      const quotes = response.data.quotes || {}
+      
+      // Update stocks with new prices
+      setStocks(prevStocks => 
+        prevStocks.map(stock => {
+          const quote = quotes[stock.symbol]
+          return {
+            ...stock,
+            price: quote?.price ?? 0,
+            priceChange: quote?.change ?? null,
+            priceChangePercent: quote?.changePercent ?? null,
+            priceLoading: false,
+          }
+        })
+      )
+    } catch (error) {
+      console.error('Error refreshing prices:', error)
+      // Reset loading state on error
+      setStocks(prevStocks => 
+        prevStocks.map(stock => ({
+          ...stock,
+          priceLoading: false,
+        }))
+      )
+    } finally {
+      setIsPriceRefreshing(false)
+    }
+  }, [stocks, isPriceRefreshing])
+
+  // Fetch real-time prices for symbols (batched to avoid URL length limits)
+  const fetchRealTimePrices = useCallback(async (symbols: string[]): Promise<Record<string, StockQuote>> => {
+    if (symbols.length === 0) return {}
+    
+    const allQuotes: Record<string, StockQuote> = {}
+    const batchSize = 40 // Keep under the 50 symbol API limit
+    
+    try {
+      // Process symbols in batches
+      for (let i = 0; i < symbols.length; i += batchSize) {
+        const batch = symbols.slice(i, i + batchSize)
+        console.log(`Fetching prices batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(symbols.length / batchSize)} (${batch.length} symbols)`)
+        
+        const response = await stockQuotesApi.getQuotes(batch)
+        const quotes = response.data.quotes || {}
+        
+        // Merge quotes into allQuotes
+        Object.assign(allQuotes, quotes)
+        
+        // Small delay between batches to be respectful of rate limits
+        if (i + batchSize < symbols.length) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+      }
+      
+      return allQuotes
+    } catch (error) {
+      console.error('Error fetching real-time prices:', error)
+      return allQuotes // Return any quotes we've collected so far
+    }
+  }, [])
+
+  // Load recommendations from database and fetch real-time prices
   const loadRecommendations = useCallback(async (watchlist: WatchlistStock[]) => {
     try {
-      const response = await recommendationApi.getRecommendations(50)
+      // Fetch recommendations for all watchlist stocks (up to 500)
+      const response = await recommendationApi.getRecommendations(500)
       const recommendations = response.data.recommendations || []
       
-      // Map watchlist stocks with their recommendations
-      const stocksWithData = watchlist.map(stock => {
+      // Map watchlist stocks with their recommendations (prices loading initially)
+      const stocksWithData: StockDisplay[] = watchlist.map(stock => {
         const rec = recommendations.find(r => r.symbol === stock.symbol)
-        if (rec) {
-          return {
-            id: stock.id,
-            symbol: stock.symbol,
-            company_name: stock.company_name,
-            exchange: stock.exchange,
-            action: rec.action,
-            confidence: rec.confidence ?? rec.normalizedScore ?? 0,
-            price: rec.priceAtRecommendation ?? 0,
-          }
+        return {
+          id: stock.id,
+          symbol: stock.symbol,
+          company_name: stock.company_name,
+          exchange: stock.exchange,
+          action: rec?.action ?? 'HOLD',
+          confidence: rec?.confidence ?? rec?.normalizedScore ?? 0,
+          price: 0, // Will be populated with real-time price
+          priceChange: null,
+          priceChangePercent: null,
+          priceLoading: true,
+          hasRecommendation: !!rec,
         }
-        // No recommendation yet - show as needs calculation
-        return generateMockAIData(stock)
       })
       
       setStocks(stocksWithData)
+      
+      // Fetch real-time prices in parallel
+      if (stocksWithData.length > 0) {
+        const symbols = stocksWithData.map(s => s.symbol)
+        console.log(`Fetching real-time prices for ${symbols.length} symbols...`)
+        
+        try {
+          const quotes = await fetchRealTimePrices(symbols)
+          console.log(`Received quotes for ${Object.keys(quotes).length} symbols`)
+          
+          // Update stocks with real prices
+          setStocks(prevStocks => 
+            prevStocks.map(stock => {
+              const quote = quotes[stock.symbol]
+              if (quote?.price) {
+                return {
+                  ...stock,
+                  price: quote.price,
+                  priceChange: quote.change ?? null,
+                  priceChangePercent: quote.changePercent ?? null,
+                  priceLoading: false,
+                }
+              }
+              return {
+                ...stock,
+                priceLoading: false,
+              }
+            })
+          )
+        } catch (priceError) {
+          console.error('Error fetching prices:', priceError)
+          // Reset loading state on error
+          setStocks(prevStocks => 
+            prevStocks.map(stock => ({
+              ...stock,
+              priceLoading: false,
+            }))
+          )
+        }
+      }
     } catch (error) {
       console.error('Error loading recommendations:', error)
-      // Fallback to mock data
-      const stocksWithAI = watchlist.map(stock => generateMockAIData(stock))
-      setStocks(stocksWithAI)
+      // Still try to show watchlist with prices even if recommendations fail
+      const stocksWithData: StockDisplay[] = watchlist.map(stock => ({
+        id: stock.id,
+        symbol: stock.symbol,
+        company_name: stock.company_name,
+        exchange: stock.exchange,
+        action: 'HOLD',
+        confidence: 0,
+        price: 0,
+        priceChange: null,
+        priceChangePercent: null,
+        priceLoading: true,
+        hasRecommendation: false,
+      }))
+      
+      setStocks(stocksWithData)
+      
+      // Fetch real-time prices even on recommendation error
+      if (stocksWithData.length > 0) {
+        const symbols = stocksWithData.map(s => s.symbol)
+        const quotes = await fetchRealTimePrices(symbols)
+        
+        setStocks(prevStocks => 
+          prevStocks.map(stock => {
+            const quote = quotes[stock.symbol]
+            return {
+              ...stock,
+              price: quote?.price ?? 0,
+              priceChange: quote?.change ?? null,
+              priceChangePercent: quote?.changePercent ?? null,
+              priceLoading: false,
+            }
+          })
+        )
+      }
     }
-  }, [])
+  }, [fetchRealTimePrices])
 
   // Load user's watchlist and brokerage connections
   useEffect(() => {
@@ -207,11 +401,14 @@ export default function Dashboard() {
             <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
               <div className="space-y-3">
-                <button className="w-full flex items-center gap-3 px-4 py-3 text-left text-gray-700 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
+                <button 
+                  onClick={() => navigate('/get-recommendation')}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left text-gray-700 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors"
+                >
                   <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                   </svg>
-                  <span className="font-medium">New Trade</span>
+                  <span className="font-medium">Get Recommendation</span>
                 </button>
                 <button className="w-full flex items-center gap-3 px-4 py-3 text-left text-gray-700 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors">
                   <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -320,20 +517,37 @@ export default function Dashboard() {
                     </span>
                   ) : null}
                   {stocks.length > 0 && (
-                    <button
-                      onClick={handleGenerateRecommendations}
-                      disabled={isGenerating}
-                      className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-                        isGenerating
-                          ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                          : 'bg-blue-600 text-white hover:bg-blue-700'
-                      }`}
-                    >
-                      <svg className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                      {isGenerating ? 'Generating...' : 'Generate Recommendations'}
-                    </button>
+                    <>
+                      <button
+                        onClick={handleRefreshPrices}
+                        disabled={isPriceRefreshing || isGenerating}
+                        className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                          isPriceRefreshing || isGenerating
+                            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                        title="Refresh real-time prices"
+                      >
+                        <svg className={`w-4 h-4 ${isPriceRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        {isPriceRefreshing ? 'Refreshing...' : 'Refresh Prices'}
+                      </button>
+                      <button
+                        onClick={handleGenerateRecommendations}
+                        disabled={isGenerating}
+                        className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                          isGenerating
+                            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                            : 'bg-blue-600 text-white hover:bg-blue-700'
+                        }`}
+                      >
+                        <svg className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        {isGenerating ? 'Generating...' : 'Generate Recommendations'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -364,15 +578,33 @@ export default function Dashboard() {
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                        <th 
+                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors select-none"
+                          onClick={() => handleSort('symbol')}
+                        >
+                          <div className="flex items-center">
+                            Symbol
+                            <SortIndicator field="symbol" />
+                          </div>
+                        </th>
+                        <th 
+                          className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 transition-colors select-none"
+                          onClick={() => handleSort('action')}
+                        >
+                          <div className="flex items-center">
+                            Action
+                            <SortIndicator field="action" />
+                          </div>
+                        </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <span title="Real-time market price from Yahoo Finance">Current Price</span>
+                        </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {stocks.map((stock) => (
+                      {sortedStocks.map((stock) => (
                         <tr key={stock.id} className="hover:bg-gray-50 transition-colors">
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="flex items-center gap-3">
@@ -391,9 +623,13 @@ export default function Dashboard() {
                                 <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
                                 Calculating
                               </span>
-                            ) : (
+                            ) : stock.hasRecommendation ? (
                               <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getActionColor(stock.action)}`}>
                                 {stock.action}
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-500" title="No recommendation generated yet">
+                                Pending
                               </span>
                             )}
                           </td>
@@ -421,7 +657,23 @@ export default function Dashboard() {
                             )}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="font-medium text-gray-900">${stock.price.toFixed(2)}</span>
+                            {stock.priceLoading ? (
+                              <div className="flex items-center gap-2">
+                                <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin"></div>
+                                <span className="text-gray-400">Loading...</span>
+                              </div>
+                            ) : stock.price > 0 ? (
+                              <div>
+                                <span className="font-medium text-gray-900">${stock.price.toFixed(2)}</span>
+                                {stock.priceChange !== null && (
+                                  <p className={`text-xs ${stock.priceChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {stock.priceChange >= 0 ? '+' : ''}{stock.priceChange.toFixed(2)} ({stock.priceChangePercent?.toFixed(2)}%)
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">N/A</span>
+                            )}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="flex gap-2">
