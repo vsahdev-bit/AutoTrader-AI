@@ -17,4 +17,4 @@ fi
   "${COMPOSE_CMD[@]}" down
 )
 
-echo "✅ All services stopped"
+echo "All services stopped"
