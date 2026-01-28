@@ -346,10 +346,12 @@ services:
       - vault_data:/vault/file
       - ./vault/vault.hcl:/vault/config/vault.hcl:ro
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget -q --spider http://127.0.0.1:8200/v1/sys/health || exit 1"]
-      interval: 10s
+      # Only check HTTP reachability. Vault may return 501 while uninitialized, which is expected
+      # before vault-bootstrap runs.
+      test: ["CMD", "sh", "-c", "curl -sS -o /dev/null http://127.0.0.1:8200/v1/sys/health"]
+      interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 30
     networks:
       - autotrader-network
 
@@ -358,8 +360,7 @@ services:
     image: hashicorp/vault:1.15
     container_name: autotrader-vault-bootstrap
     depends_on:
-      vault:
-        condition: service_started
+      - vault
     environment:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN_ID: local-dev-token
