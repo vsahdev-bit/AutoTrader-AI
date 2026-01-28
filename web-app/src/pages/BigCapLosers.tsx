@@ -946,7 +946,7 @@ export default function BigCapLosers() {
         setLastUpdated(new Date())
         
         // Show completion message with stats
-        const recsCount = stats.recommendations_generated || losersData.filter(l => l.recommendation_id).length
+        const recsCount = stats.recommendations_generated || losersData.filter(l => !!l.action || !!l.recommendation_generated_at).length
         setRefreshMessage(`✓ Complete! Found ${losersData.length} losers (${over10Data.length} over 10%), ${recsCount} recommendations generated`)
         
         // Step 4: Fetch regime data for any new stocks in background
