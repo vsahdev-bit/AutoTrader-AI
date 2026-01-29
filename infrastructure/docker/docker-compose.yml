@@ -98,7 +98,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
       - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=dev-root-token
+      - VAULT_TOKEN=local-dev-token
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_USER=default
@@ -131,7 +131,7 @@ services:
     container_name: autotrader-news-ingestion
     environment:
       - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=dev-root-token
+      - VAULT_TOKEN=local-dev-token
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_USER=default
@@ -356,19 +356,22 @@ services:
       - autotrader-network
 
   # One-shot vault initializer/unsealer + policy/token bootstrap
+  # Uses a purpose-built image that includes curl + jq and talks to Vault over HTTP.
   vault-bootstrap:
-    image: hashicorp/vault:1.15
+    build:
+      context: ./vault-bootstrap
+      dockerfile: Dockerfile
     container_name: autotrader-vault-bootstrap
     depends_on:
       - vault
     environment:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN_ID: local-dev-token
-      INIT_FILE: /vault/file/init.json
+      INIT_JSON: /vault/file/init.json
+      UNSEAL_KEY_FILE: /vault/file/unseal.key
+      ROOT_TOKEN_FILE: /vault/file/root.token
     volumes:
       - vault_data:/vault/file
-      - ./vault/bootstrap.sh:/bootstrap.sh:ro
-    entrypoint: ["sh", "/bootstrap.sh"]
     restart: "no"
     networks:
       - autotrader-network
