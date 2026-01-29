@@ -8,6 +8,8 @@ set -eu
 
 VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
 INIT_FILE=${INIT_FILE:-/vault/file/init.json}
+UNSEAL_KEY_FILE=${UNSEAL_KEY_FILE:-/vault/file/unseal.key}
+ROOT_TOKEN_FILE=${ROOT_TOKEN_FILE:-/vault/file/root.token}
 TOKEN_ID=${VAULT_TOKEN_ID:-local-dev-token}
 POLICY_NAME=${POLICY_NAME:-autotrader-local}
 
@@ -36,31 +38,37 @@ wait_ready() {
   exit 1
 }
 
-parse_unseal_key() {
-  # Depending on Vault version/command, the init JSON may contain:
-  # - "unseal_keys_b64": ["..."]  (vault operator init -format=json)
-  # - "keys_base64": ["..."]     (sys/init API)
-  sed -n 's/.*"unseal_keys_b64"[[:space:]]*:[[:space:]]*\["\([^"]*\)"\].*/\1/p' "$INIT_FILE" | head -n 1
-  sed -n 's/.*"keys_base64"[[:space:]]*:[[:space:]]*\["\([^"]*\)"\].*/\1/p' "$INIT_FILE" | head -n 1
-}
+# We avoid parsing init JSON with sed/jq/python; instead we persist the unseal key
+# and root token into separate files on first initialization.
 
-parse_root_token() {
-  sed -n 's/.*"root_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$INIT_FILE" | head -n 1
-}
 
 wait_ready
 
-if [ ! -f "$INIT_FILE" ]; then
+if [ ! -f "$INIT_FILE" ] || [ ! -f "$UNSEAL_KEY_FILE" ] || [ ! -f "$ROOT_TOKEN_FILE" ]; then
   echo "[vault-bootstrap] Initializing Vault..."
   VAULT_ADDR="$VAULT_ADDR" vault operator init -key-shares=1 -key-threshold=1 -format=json > "$INIT_FILE"
+
+  # Extract and persist init materials for future runs.
+  # The JSON output contains unseal_keys_b64 and root_token.
+  UNSEAL_KEY=$(sed -n 's/.*"unseal_keys_b64"[[:space:]]*:[[:space:]]*\["\([^"]*\)"\].*/\1/p' "$INIT_FILE" | head -n 1)
+  ROOT_TOKEN=$(sed -n 's/.*"root_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$INIT_FILE" | head -n 1)
+
+  if [ -z "$UNSEAL_KEY" ] || [ -z "$ROOT_TOKEN" ]; then
+    echo "[vault-bootstrap] ERROR: could not extract unseal/root token from init json" >&2
+    exit 1
+  fi
+
+  echo "$UNSEAL_KEY" > "$UNSEAL_KEY_FILE"
+  echo "$ROOT_TOKEN" > "$ROOT_TOKEN_FILE"
+
   echo "[vault-bootstrap] Wrote init material to $INIT_FILE"
 fi
 
-UNSEAL_KEY=$(parse_unseal_key | head -n 1)
-ROOT_TOKEN=$(parse_root_token | head -n 1)
+UNSEAL_KEY=$(cat "$UNSEAL_KEY_FILE")
+ROOT_TOKEN=$(cat "$ROOT_TOKEN_FILE")
 
 if [ -z "$UNSEAL_KEY" ] || [ -z "$ROOT_TOKEN" ]; then
-  echo "[vault-bootstrap] ERROR: could not parse init file: $INIT_FILE" >&2
+  echo "[vault-bootstrap] ERROR: init materials missing/empty" >&2
   exit 1
 fi
 
