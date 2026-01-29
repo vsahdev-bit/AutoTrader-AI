@@ -415,6 +415,7 @@ volumes:
   redis_data:
   clickhouse_data:
   vault_data:
+    name: vault_data
 
 networks:
   autotrader-network:
