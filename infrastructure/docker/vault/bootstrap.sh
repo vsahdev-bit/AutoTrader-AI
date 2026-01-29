@@ -18,11 +18,11 @@ wait_ready() {
     # the status command returns *any* meaningful response (including "not initialized").
     out=$(VAULT_ADDR="$VAULT_ADDR" vault status 2>&1 || true)
 
-    # Successful status output
-    echo "$out" | grep -qi "Vault server status" && return 0
+    # Treat as reachable once the status table is returned (it contains an 'Initialized' row)
+    echo "$out" | grep -qi "^Initialized" && return 0
 
-    # Uninitialized Vault still returns a helpful message
-    echo "$out" | grep -qi "not initialized" && return 0
+    # Some versions include a more verbose header
+    echo "$out" | grep -qi "Vault server status" && return 0
 
     # If we got here, we likely can't connect yet.
     # Only log occasionally to avoid noisy logs.
