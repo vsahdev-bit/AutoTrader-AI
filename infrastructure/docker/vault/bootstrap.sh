@@ -14,12 +14,12 @@ POLICY_NAME=${POLICY_NAME:-autotrader-local}
 wait_ready() {
   echo "[vault-bootstrap] Waiting for Vault HTTP..."
   for i in $(seq 1 120); do
-    # vault CLI exists in the hashicorp/vault image; use it instead of curl/python.
-    if VAULT_ADDR="$VAULT_ADDR" vault status >/dev/null 2>&1; then
+    # Use HTTP reachability; /v1/sys/health returns 501 while uninitialized, which is OK.
+    if wget -qO- "$VAULT_ADDR/v1/sys/health" >/dev/null 2>&1; then
       return 0
     fi
-    # vault status returns non-zero while uninitialized; still treat that as "reachable" if TCP is up
-    if VAULT_ADDR="$VAULT_ADDR" vault status 2>&1 | grep -qi "not initialized"; then
+    # Some wget builds return non-zero on 501; still treat any response body as reachable.
+    if wget -qO- "$VAULT_ADDR/v1/sys/health" 2>/dev/null | grep -q '"version"'; then
       return 0
     fi
     sleep 1
