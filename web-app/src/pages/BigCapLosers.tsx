@@ -345,11 +345,15 @@ function TopNewsModal({
   onClose,
   symbol,
   articles,
+  onReload,
+  isReloading,
 }: {
   isOpen: boolean
   onClose: () => void
   symbol: string
   articles: any[]
+  onReload: () => void
+  isReloading: boolean
 }) {
   if (!isOpen) return null
 
@@ -364,12 +368,24 @@ function TopNewsModal({
           <div className="flex items-center justify-between mb-4 sticky top-0 bg-white pb-2 border-b border-gray-100">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Top News - {symbol}</h3>
-              <p className="text-sm text-gray-500">Articles aggregated during recommendation generation</p>
+              <p className="text-sm text-gray-500">Top 10 articles (last 7 days). Use Reload if empty.</p>
             </div>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
+            </button>
+          </div>
+
+          <div className="flex justify-end mb-3">
+            <button
+              onClick={onReload}
+              disabled={isReloading}
+              className={`px-3 py-1.5 text-xs font-medium rounded border transition ${
+                isReloading ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white hover:bg-gray-50 text-gray-700'
+              }`}
+            >
+              {isReloading ? 'Reloading...' : 'Reload Top News'}
             </button>
           </div>
 
@@ -808,6 +824,7 @@ export default function BigCapLosers() {
   const [isTopNewsModalOpen, setIsTopNewsModalOpen] = useState(false)
   const [topNewsSymbol, setTopNewsSymbol] = useState<string | null>(null)
   const [topNewsArticles, setTopNewsArticles] = useState<any[]>([])
+  const [isTopNewsReloading, setIsTopNewsReloading] = useState(false)
   const [regimeData, setRegimeData] = useState<Record<string, RegimeResponse>>({})
   const [selectedRegimeSymbol, setSelectedRegimeSymbol] = useState<string | null>(null)
 
@@ -983,6 +1000,21 @@ export default function BigCapLosers() {
     setTopNewsSymbol(symbol)
     setTopNewsArticles(articles)
     setIsTopNewsModalOpen(true)
+  }
+
+  const reloadTopNews = async () => {
+    if (!topNewsSymbol) return
+    try {
+      setIsTopNewsReloading(true)
+      const resp = await fetch(`${API_BASE}/api/big-cap-losers/top-news/${topNewsSymbol}?t=${Date.now()}`, { cache: 'no-store' })
+      if (!resp.ok) throw new Error('Failed to reload top news')
+      const data = await resp.json()
+      setTopNewsArticles(Array.isArray(data.articles) ? data.articles : [])
+    } catch (e) {
+      console.error('Reload top news failed:', e)
+    } finally {
+      setIsTopNewsReloading(false)
+    }
   }
 
   const handleRegimeClick = async (symbol: string) => {
@@ -1274,9 +1306,12 @@ export default function BigCapLosers() {
             setIsTopNewsModalOpen(false)
             setTopNewsSymbol(null)
             setTopNewsArticles([])
+            setIsTopNewsReloading(false)
           }}
           symbol={topNewsSymbol || ''}
           articles={topNewsArticles}
+          onReload={reloadTopNews}
+          isReloading={isTopNewsReloading}
         />
 
         {/* Explanation Modal */}

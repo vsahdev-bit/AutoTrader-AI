@@ -393,6 +393,10 @@ services:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: local-dev-token
       REDIS_URL: redis://redis:6379
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse_dev_pass
     ports:
       - "3001:3001"
     volumes:

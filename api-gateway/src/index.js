@@ -1963,6 +1963,31 @@ app.get('/api/jim-cramer/stock/:symbol', async (req, res) => {
 // BIG CAP LOSERS ENDPOINTS
 // ============================================================================
 
+// ClickHouse helpers (used for Top News)
+const CLICKHOUSE_HOST = process.env.CLICKHOUSE_HOST || 'clickhouse';
+const CLICKHOUSE_PORT = process.env.CLICKHOUSE_PORT || '8123';
+const CLICKHOUSE_USER = process.env.CLICKHOUSE_USER || 'default';
+const CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD || '';
+
+async function queryClickHouse(sql) {
+  const url = `http://${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      ...(CLICKHOUSE_USER ? { 'X-ClickHouse-User': CLICKHOUSE_USER } : {}),
+      ...(CLICKHOUSE_PASSWORD ? { 'X-ClickHouse-Key': CLICKHOUSE_PASSWORD } : {}),
+    },
+    body: sql,
+  });
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(`ClickHouse HTTP ${resp.status}: ${text.slice(0, 200)}`);
+  }
+  return text;
+}
+
+
 /**
  * GET /api/big-cap-losers/latest
  * Get the latest big cap losers (stocks with market cap > $1B)
@@ -2257,6 +2282,52 @@ app.post('/api/v1/crawler-services/big-cap-losers/run', async (req, res) => {
   } catch (error) {
     console.error('Error triggering Big Cap Losers service:', error);
     res.status(500).json({ error: 'Failed to trigger Big Cap Losers service' });
+  }
+});
+
+/**
+ * GET /api/big-cap-losers/top-news/:symbol
+ * Fetch Top 10 news articles for a symbol directly from ClickHouse (last 7d)
+ */
+app.get('/api/big-cap-losers/top-news/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase();
+    if (!symbol) return res.status(400).json({ error: 'symbol required' });
+
+    const sql = `
+      SELECT
+        title,
+        url,
+        source,
+        source_name,
+        published_at,
+        sentiment_score,
+        sentiment_label,
+        sentiment_confidence
+      FROM news_articles
+      WHERE has(symbols, '${symbol}')
+        AND published_at >= now() - INTERVAL 7 DAY
+      ORDER BY (sentiment_confidence * abs(sentiment_score)) DESC, published_at DESC
+      LIMIT 10
+      FORMAT JSON
+    `;
+
+    const raw = await queryClickHouse(sql);
+    const parsed = JSON.parse(raw);
+    const rows = (parsed.data || []).map(r => ({
+      title: r.title,
+      url: r.url,
+      source: r.source_name || r.source,
+      published_at: r.published_at,
+      sentiment: r.sentiment_label,
+      sentiment_score: r.sentiment_score,
+      confidence: r.sentiment_confidence,
+    }));
+
+    res.json({ symbol, articles: rows });
+  } catch (e) {
+    console.error('Error fetching top news from ClickHouse:', e.message);
+    res.status(500).json({ error: 'Failed to fetch top news' });
   }
 });
 
@@ -2630,6 +2701,32 @@ app.post('/api/big-cap-losers/refresh', async (req, res) => {
     
     // Wait a moment for DB to update
     await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Fire-and-forget: trigger one-shot news ingestion for the current loser symbols.
+    // This helps Top News populate shortly after refresh.
+    try {
+      const symResult = await pool.query(`
+        SELECT symbol
+        FROM big_cap_losers
+        ORDER BY percent_change ASC
+        LIMIT 25
+      `);
+      const symbols = symResult.rows.map(r => r.symbol).filter(Boolean);
+      if (symbols.length) {
+        const symbolsCsv = symbols.join(',');
+        exec(
+          `docker exec autotrader-news-ingestion python3 news_ingestion_service.py --once --symbols "${symbolsCsv}" 2>&1 || true`,
+          { timeout: 300000 },
+          (err, stdout, stderr) => {
+            if (err) console.log('news-ingestion on-demand exec error:', err.message);
+            if (stdout) console.log('news-ingestion on-demand stdout:', stdout.slice(0, 500));
+            if (stderr) console.log('news-ingestion on-demand stderr:', stderr.slice(0, 500));
+          }
+        );
+      }
+    } catch (e) {
+      console.log('Could not trigger on-demand news ingestion:', e.message);
+    }
     
     // Fetch the updated results from database
     const result = await pool.query(`
