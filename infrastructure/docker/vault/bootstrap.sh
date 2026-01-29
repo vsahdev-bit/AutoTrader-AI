@@ -37,8 +37,11 @@ wait_ready() {
 }
 
 parse_unseal_key() {
-  # init.json contains: "unseal_keys_b64":["..."],"root_token":"..."
+  # Depending on Vault version/command, the init JSON may contain:
+  # - "unseal_keys_b64": ["..."]  (vault operator init -format=json)
+  # - "keys_base64": ["..."]     (sys/init API)
   sed -n 's/.*"unseal_keys_b64"[[:space:]]*:[[:space:]]*\["\([^"]*\)"\].*/\1/p' "$INIT_FILE" | head -n 1
+  sed -n 's/.*"keys_base64"[[:space:]]*:[[:space:]]*\["\([^"]*\)"\].*/\1/p' "$INIT_FILE" | head -n 1
 }
 
 parse_root_token() {
@@ -53,8 +56,8 @@ if [ ! -f "$INIT_FILE" ]; then
   echo "[vault-bootstrap] Wrote init material to $INIT_FILE"
 fi
 
-UNSEAL_KEY=$(parse_unseal_key)
-ROOT_TOKEN=$(parse_root_token)
+UNSEAL_KEY=$(parse_unseal_key | head -n 1)
+ROOT_TOKEN=$(parse_root_token | head -n 1)
 
 if [ -z "$UNSEAL_KEY" ] || [ -z "$ROOT_TOKEN" ]; then
   echo "[vault-bootstrap] ERROR: could not parse init file: $INIT_FILE" >&2
