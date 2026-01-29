@@ -14,14 +14,22 @@ POLICY_NAME=${POLICY_NAME:-autotrader-local}
 wait_ready() {
   echo "[vault-bootstrap] Waiting for Vault HTTP..."
   for i in $(seq 1 120); do
-    # Use HTTP reachability; /v1/sys/health returns 501 while uninitialized, which is OK.
-    if wget -qO- "$VAULT_ADDR/v1/sys/health" >/dev/null 2>&1; then
-      return 0
+    # Use vault CLI (available in image). We consider Vault "reachable" as soon as
+    # the status command returns *any* meaningful response (including "not initialized").
+    out=$(VAULT_ADDR="$VAULT_ADDR" vault status 2>&1 || true)
+
+    # Successful status output
+    echo "$out" | grep -qi "Vault server status" && return 0
+
+    # Uninitialized Vault still returns a helpful message
+    echo "$out" | grep -qi "not initialized" && return 0
+
+    # If we got here, we likely can't connect yet.
+    # Only log occasionally to avoid noisy logs.
+    if [ $((i % 10)) -eq 0 ]; then
+      echo "[vault-bootstrap] still waiting... last error: ${out}" >&2
     fi
-    # Some wget builds return non-zero on 501; still treat any response body as reachable.
-    if wget -qO- "$VAULT_ADDR/v1/sys/health" 2>/dev/null | grep -q '"version"'; then
-      return 0
-    fi
+
     sleep 1
   done
   echo "[vault-bootstrap] Vault did not become reachable" >&2
