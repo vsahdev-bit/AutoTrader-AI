@@ -26,6 +26,7 @@ import { getOnboardingData } from '../services/onboardingApi'
 import { StockRecommendationHistory, RegimeResponse } from '../types'
 import { useAuth } from '../context/AuthContext'
 import Header from '../components/Header'
+import StockSymbolLink from '../components/StockSymbolLink'
 import api from '../services/api'
 import RegimeDisplay from '../components/RegimeDisplay'
 
@@ -461,6 +462,7 @@ function ExplanationModal({
 interface WatchlistSymbol {
   symbol: string
   companyName: string
+  is_starred?: boolean
 }
 
 interface SymbolRecommendations {
@@ -469,6 +471,7 @@ interface SymbolRecommendations {
   recommendations: StockRecommendationHistory[]
   loading: boolean
   error: string | null
+  lastUpdated?: string | null
 }
 
 /**
@@ -783,7 +786,12 @@ function StockRecommendationTable({
           {/* Row 2: Values - all with consistent height */}
           {/* Symbol Value */}
           <div className="flex flex-col">
-            <h2 className="text-xl font-semibold text-gray-900 leading-7">{symbol}</h2>
+            <h2 className="text-xl font-semibold leading-7">
+              <StockSymbolLink
+                symbol={symbol}
+                className="text-gray-900"
+              />
+            </h2>
             <p className="text-xs text-gray-400 truncate">{companyName}</p>
           </div>
           
@@ -1077,6 +1085,7 @@ function StockRecommendationTable({
  * Main StockRecommendations component
  */
 export default function StockRecommendations() {
+  const [starringSymbol, setStarringSymbol] = useState<string | null>(null)
   const { symbol: urlSymbol } = useParams<{ symbol?: string }>()
   const location = useLocation()
   const navigate = useNavigate()
@@ -1086,6 +1095,38 @@ export default function StockRecommendations() {
   const targetSymbol = urlSymbol?.toUpperCase() || location.hash.replace('#', '').toUpperCase() || ''
   
   const [watchlist, setWatchlist] = useState<WatchlistSymbol[]>([])
+
+  const navWatchlist = [...watchlist].sort((a, b) => {
+    const aStar = a.is_starred ? 1 : 0
+    const bStar = b.is_starred ? 1 : 0
+    if (aStar !== bStar) return bStar - aStar
+    return a.symbol.localeCompare(b.symbol)
+  })
+
+  const setStarred = async (symbol: string, starred: boolean) => {
+    if (!user?.dbId) return
+
+    setStarringSymbol(symbol)
+
+    // optimistic update
+    setWatchlist(prev => prev.map(w => (w.symbol === symbol ? { ...w, is_starred: starred } : w)))
+
+    try {
+      const resp = await fetch(`/api/onboarding/${user.dbId}/watchlist/${symbol}/star`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ starred }),
+      })
+      if (!resp.ok) throw new Error('Failed to update star')
+      const updated = await resp.json()
+      setWatchlist(prev => prev.map(w => (w.symbol === symbol ? { ...w, is_starred: updated.is_starred } : w)))
+    } catch (e) {
+      // revert
+      setWatchlist(prev => prev.map(w => (w.symbol === symbol ? { ...w, is_starred: !starred } : w)))
+    } finally {
+      setStarringSymbol(null)
+    }
+  }
   const [symbolData, setSymbolData] = useState<Map<string, SymbolRecommendations>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1106,10 +1147,14 @@ export default function StockRecommendations() {
       
       try {
         const data = await getOnboardingData(user.dbId)
-        const symbols = data.watchlist.map(w => ({
-          symbol: w.symbol,
-          companyName: w.company_name || w.symbol
-        }))
+        const symbols = data.watchlist
+          .map(w => ({
+            symbol: w.symbol,
+            companyName: w.company_name || w.symbol,
+            is_starred: (w as any).is_starred ?? false,
+          }))
+          // Keep main list alphabetical (do not star-sort sections)
+          .sort((a, b) => a.symbol.localeCompare(b.symbol))
         setWatchlist(symbols)
         
         // Initialize refs for each symbol
@@ -1141,7 +1186,7 @@ export default function StockRecommendations() {
     }
     
     fetchWatchlist()
-  }, [user?.dbId])
+  }, [user?.dbId, location.key])
   
   // Fetch recommendations for all watchlist symbols
   useEffect(() => {
@@ -1215,38 +1260,60 @@ export default function StockRecommendations() {
     try {
       await api.post('/recommendations/generate')
       setGenerateMessage('Generating recommendations... This may take a few minutes.')
-      
-      // Poll for updates every 10 seconds for up to 5 minutes
+
+      // Poll generation status; once complete, do a single refresh of all symbols
       let pollCount = 0
       const maxPolls = 30
       const pollInterval = setInterval(async () => {
         pollCount++
         
-        // Refresh data
-        for (const { symbol, companyName } of watchlist) {
-          try {
-            const response = await recommendationApi.getHistory(symbol, 10)
-            setSymbolData(prev => {
-              const newMap = new Map(prev)
-              newMap.set(symbol, {
-                symbol,
-                companyName,
-                recommendations: response.data.recommendations,
-                loading: false,
-                error: null
-              })
-              return newMap
-            })
-          } catch (err) {
-            console.error(`Failed to refresh ${symbol}:`, err)
+        // Check generation status
+        try {
+          const status = await api.get('/recommendations/generation-status')
+          if (status.data.status === 'completed') {
+            // Refresh data once from DB
+            for (const { symbol, companyName } of watchlist) {
+              try {
+                const response = await recommendationApi.getHistory(symbol, 10)
+                setSymbolData(prev => {
+                  const newMap = new Map(prev)
+                  newMap.set(symbol, {
+                    symbol,
+                    companyName,
+                    recommendations: response.data.recommendations,
+                    loading: false,
+                    error: null,
+                    lastUpdated: new Date().toISOString(),
+                  })
+                  return newMap
+                })
+              } catch (err) {
+                console.error(`Failed to refresh ${symbol}:`, err)
+              }
+            }
+
+            clearInterval(pollInterval)
+            setIsGenerating(false)
+            setGenerateMessage('Recommendations updated')
+            setTimeout(() => setGenerateMessage(null), 2000)
+            return
           }
+        } catch {}
+
+        // If still running, just keep polling
+        if (pollCount % 3 === 0) {
+          setGenerateMessage('Generating recommendations...')
         }
-        
+
+        // Auto-stop safeguard
         if (pollCount >= maxPolls) {
           clearInterval(pollInterval)
           setIsGenerating(false)
           setGenerateMessage(null)
         }
+
+        return
+
       }, 10000)
       
       // Auto-stop after 5 minutes
@@ -1323,40 +1390,79 @@ export default function StockRecommendations() {
                   <p className="text-xs text-gray-500">{watchlist.length} stocks</p>
                 </div>
                 <nav className="max-h-[calc(100vh-240px)] overflow-y-auto">
-                  {watchlist.map(({ symbol, companyName }) => {
+                  {navWatchlist.map(({ symbol, companyName, is_starred }) => {
                     const data = symbolData.get(symbol)
                     const latestRec = data?.recommendations?.[0]
                     const isActive = targetSymbol === symbol
-                    
+
                     return (
                       <button
                         key={symbol}
                         onClick={() => handleSymbolClick(symbol)}
-                        className={`w-full px-4 py-3 text-left border-b border-gray-100 last:border-b-0 transition-colors ${
+                        className={`group w-full px-4 py-3 text-left border-b border-gray-100 last:border-b-0 transition-colors ${
                           isActive
                             ? 'bg-blue-50 border-l-4 border-l-blue-600'
-                            : 'hover:bg-gray-50 border-l-4 border-l-transparent'
+                            : is_starred
+                              ? 'bg-yellow-50 hover:bg-yellow-100 border-l-4 border-l-transparent'
+                              : 'hover:bg-gray-50 border-l-4 border-l-transparent'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
-                          <span className={`font-semibold text-sm ${isActive ? 'text-blue-700' : 'text-gray-900'}`}>
-                            {symbol}
-                          </span>
-                          {latestRec && (
-                            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                              latestRec.action === 'BUY' 
-                                ? 'bg-green-100 text-green-700' 
-                                : latestRec.action === 'SELL' 
-                                  ? 'bg-red-100 text-red-700' 
-                                  : 'bg-yellow-100 text-yellow-700'
-                            }`}>
-                              {latestRec.action}
-                            </span>
-                          )}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`font-semibold text-sm ${isActive ? 'text-blue-700' : 'text-gray-900'}`}>
+                                <StockSymbolLink
+                                  symbol={symbol}
+                                  className="font-medium text-blue-700 hover:text-blue-900 hover:underline"
+                                />
+                              </span>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  if (starringSymbol) return
+                                  setStarred(symbol, !is_starred)
+                                }}
+                                className={`transition-opacity ${
+                                  is_starred ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                                }`}
+                                title={is_starred ? 'Unstar' : 'Star'}
+                                aria-label={is_starred ? 'Unstar symbol' : 'Star symbol'}
+                              >
+                                {is_starred ? (
+                                  <svg className="w-4 h-4 text-yellow-500" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.955a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.37 2.448a1 1 0 00-.364 1.118l1.286 3.955c.3.921-.755 1.688-1.54 1.118l-3.37-2.448a1 1 0 00-1.175 0l-3.37 2.448c-.784.57-1.838-.197-1.54-1.118l1.286-3.955a1 1 0 00-.364-1.118L2.05 9.382c-.783-.57-.38-1.81.588-1.81H6.8a1 1 0 00.95-.69l1.299-3.955z" />
+                                  </svg>
+                                ) : (
+                                  <svg className="w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l2.286 7.012a1 1 0 00.95.69h7.37c.969 0 1.371 1.24.588 1.81l-5.96 4.33a1 1 0 00-.364 1.118l2.286 7.012c.3.921-.755 1.688-1.54 1.118l-5.96-4.33a1 1 0 00-1.175 0l-5.96 4.33c-.784.57-1.838-.197-1.54-1.118l2.286-7.012a1 1 0 00-.364-1.118l-5.96-4.33c-.783-.57-.38-1.81.588-1.81h7.37a1 1 0 00.95-.69l2.286-7.012z"
+                                    />
+                                  </svg>
+                                )}
+                              </button>
+
+                              {latestRec && (
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                  latestRec.action === 'BUY' 
+                                    ? 'bg-green-100 text-green-700' 
+                                    : latestRec.action === 'SELL' 
+                                      ? 'bg-red-100 text-red-700' 
+                                      : 'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                  {latestRec.action}
+                                </span>
+                              )}
+                            </div>
+                            <p className={`text-xs truncate mt-0.5 ${isActive ? 'text-blue-600' : 'text-gray-500'}`}>
+                              {companyName}
+                            </p>
+                          </div>
                         </div>
-                        <p className={`text-xs truncate mt-0.5 ${isActive ? 'text-blue-600' : 'text-gray-500'}`}>
-                          {companyName}
-                        </p>
                       </button>
                     )
                   })}

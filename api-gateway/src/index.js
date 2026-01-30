@@ -1138,7 +1138,7 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
       const options = {
         hostname: 'recommendation-engine',
         port: 8000,
-        path: '/generate',
+        path: '/recommendations',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1185,6 +1185,18 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
         engineReq.destroy();
         console.error('Recommendation engine request timed out');
       });
+
+      // If caller didn't pass symbols, run for all watchlist symbols
+      const symbolsToRun = symbols && Array.isArray(symbols)
+        ? symbols
+        : (await pool.query('SELECT symbol FROM user_watchlist')).rows.map(r => r.symbol);
+
+      engineReq.write(JSON.stringify({
+        user_id: 'system',
+        symbols: symbolsToRun,
+        include_features: false,
+        save_to_db: true,
+      }));
       
       engineReq.end();
       
