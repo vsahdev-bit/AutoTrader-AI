@@ -96,7 +96,7 @@ export const recommendationApi = {
    * @param symbols Optional array of symbols to generate for (defaults to all watchlist)
    */
   generate: (symbols?: string[]) =>
-    api.post<{ success: boolean; message: string; startedAt: string }>(
+    api.post<{ success: boolean; message: string; startedAt: string; runId?: string }>(
       '/recommendations/generate',
       { symbols }
     ),
@@ -105,14 +105,23 @@ export const recommendationApi = {
    * Get the status of recommendation generation.
    * Used to poll for completion and show "Calculating" state.
    */
-  getGenerationStatus: () =>
-    api.get<{
-      status: 'idle' | 'running' | 'completed' | 'failed';
-      startedAt?: string;
-      completedAt?: string;
-      symbols?: string[];
-      errorMessage?: string;
-    }>('/recommendations/generation-status'),
+  getGenerationStatus: (runId?: string) =>
+    runId
+      ? api.get<{
+          runId: string;
+          status: 'idle' | 'running' | 'completed' | 'failed';
+          startedAt?: string;
+          completedAt?: string;
+          symbols?: string[];
+          errorMessage?: string;
+        }>(`/recommendations/generation-status/${runId}`)
+      : api.get<{
+          status: 'idle' | 'running' | 'completed' | 'failed';
+          startedAt?: string;
+          completedAt?: string;
+          symbols?: string[];
+          errorMessage?: string;
+        }>('/recommendations/generation-status'),
 }
 
 /**

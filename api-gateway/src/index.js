@@ -22,6 +22,9 @@ const { Pool } = pg;
 const app = express();
 const port = process.env.PORT || 3001;
 
+// UUID validation helper (used across routes)
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Plaid configuration
 const plaidConfig = new Configuration({
   basePath: PlaidEnvironments[process.env.PLAID_ENV || 'sandbox'],
@@ -110,7 +113,6 @@ app.get('/api/onboarding/:userId', async (req, res) => {
   const { userId } = req.params;
   
   // Validate UUID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(userId)) {
     // Return empty data for invalid UUID (e.g., Google sub ID before user is created)
     return res.json({
@@ -288,6 +290,110 @@ app.get('/api/onboarding/:userId/watchlist', async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.error('Error getting watchlist:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Star/unstar a watchlist symbol
+app.put('/api/onboarding/:userId/watchlist/:symbol/star', async (req, res) => {
+  const { userId, symbol } = req.params;
+  const { starred } = req.body;
+
+  if (!uuidRegex.test(userId)) {
+    return res.status(400).json({ error: 'Invalid userId format' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE user_watchlist
+       SET is_starred = $1
+       WHERE user_id = $2 AND symbol = $3
+       RETURNING *`,
+      [!!starred, userId, symbol.toUpperCase()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Symbol not found in watchlist' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating watchlist star:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============== OPTIONS WATCHLIST ROUTES ==============
+
+// Get options watchlist
+app.get('/api/options/:userId/watchlist', async (req, res) => {
+  const { userId } = req.params;
+
+  if (!uuidRegex.test(userId)) {
+    return res.status(400).json({ error: 'Invalid userId format' });
+  }
+
+  try {
+    const result = await pool.query(
+      'SELECT * FROM options_watchlist WHERE user_id = $1 ORDER BY added_at',
+      [userId]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error getting options watchlist:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Add symbol to options watchlist
+app.post('/api/options/:userId/watchlist', async (req, res) => {
+  const { userId } = req.params;
+  const { symbol, companyName, exchange } = req.body;
+
+  if (!uuidRegex.test(userId)) {
+    return res.status(400).json({ error: 'Invalid userId format' });
+  }
+
+  if (!symbol) {
+    return res.status(400).json({ error: 'Symbol is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO options_watchlist (user_id, symbol, company_name, exchange)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, symbol) DO UPDATE SET
+         company_name = COALESCE(EXCLUDED.company_name, options_watchlist.company_name),
+         exchange = COALESCE(EXCLUDED.exchange, options_watchlist.exchange)
+       RETURNING *`,
+      [userId, symbol.toUpperCase(), companyName || null, exchange || null]
+    );
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error adding to options watchlist:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Remove symbol from options watchlist
+app.delete('/api/options/:userId/watchlist/:symbol', async (req, res) => {
+  const { userId, symbol } = req.params;
+
+  if (!uuidRegex.test(userId)) {
+    return res.status(400).json({ error: 'Invalid userId format' });
+  }
+
+  try {
+    await pool.query(
+      'DELETE FROM options_watchlist WHERE user_id = $1 AND symbol = $2',
+      [userId, symbol.toUpperCase()]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error removing from options watchlist:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -681,7 +787,6 @@ app.get('/api/brokerage/:userId/connections', async (req, res) => {
   const { userId } = req.params;
   
   // Validate UUID format
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(userId)) {
     return res.json({ connections: [], accounts: [] });
   }
@@ -1114,12 +1219,28 @@ app.get('/api/trade/pin/:userId', async (req, res) => {
 app.post('/api/v1/recommendations/generate', async (req, res) => {
   try {
     const { symbols } = req.body; // Optional: specific symbols to generate for
-    
+
+    // Per-run id so clients can poll safely without collisions
+    const { randomUUID } = await import('crypto');
+    const runId = randomUUID();
+
     // Update status to show generation is in progress
     const now = new Date().toISOString();
-    console.log('Manual recommendation generation triggered at', now);
-    
-    // Mark that generation is in progress by creating a status record
+    console.log('Manual recommendation generation triggered at', now, 'runId=', runId);
+
+    // Insert per-run status row (new table). If table doesn't exist yet, ignore.
+    try {
+      await pool.query(
+        `INSERT INTO recommendation_generation_runs (run_id, status, started_at, symbols)
+         VALUES ($1, 'running', NOW(), $2)`,
+        [runId, symbols ? JSON.stringify(symbols) : null]
+      );
+    } catch (e) {
+      // likely migration not applied yet
+      console.warn('Could not write recommendation_generation_runs row:', e.message);
+    }
+
+    // Backward compatibility: maintain singleton status row
     await pool.query(`
       INSERT INTO recommendation_generation_status (status, started_at, symbols)
       VALUES ('running', NOW(), $1)
@@ -1143,7 +1264,7 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
         headers: {
           'Content-Type': 'application/json',
         },
-        timeout: 10000, // 10 second timeout for the request
+        timeout: 300000, // 5 minute timeout for the request (batch generation can be slow)
       };
       
       const engineReq = http.request(options, async (engineRes) => {
@@ -1153,7 +1274,25 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
           try {
             if (engineRes.statusCode === 202 || engineRes.statusCode === 200) {
               console.log('Recommendation engine accepted request:', data);
-              // Generation runs in background, status updated when complete
+
+              // Mark run completed (best-effort). The engine processes synchronously today.
+              try {
+                await pool.query(
+                  `UPDATE recommendation_generation_runs
+                   SET status = 'completed', completed_at = NOW()
+                   WHERE run_id = $1`,
+                  [runId]
+                );
+              } catch (e) {
+                console.warn('Could not update recommendation_generation_runs completed:', e.message);
+              }
+
+              // Backward compatible singleton row
+              await pool.query(`
+                UPDATE recommendation_generation_status
+                SET status = 'completed', completed_at = NOW()
+                WHERE status = 'running'
+              `);
             } else {
               console.error('Recommendation engine error:', data);
               await pool.query(`
@@ -1161,6 +1300,17 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
                 SET status = 'failed', completed_at = NOW(), error_message = $1
                 WHERE status = 'running'
               `, [`Engine returned ${engineRes.statusCode}: ${data}`]);
+
+              try {
+                await pool.query(
+                  `UPDATE recommendation_generation_runs
+                   SET status = 'failed', completed_at = NOW(), error_message = $1
+                   WHERE run_id = $2`,
+                  [`Engine returned ${engineRes.statusCode}: ${data}`, runId]
+                );
+              } catch (e) {
+                console.warn('Could not update recommendation_generation_runs failed:', e.message);
+              }
             }
           } catch (dbError) {
             console.error('Error updating generation status:', dbError);
@@ -1176,6 +1326,17 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
             SET status = 'failed', completed_at = NOW(), error_message = $1
             WHERE status = 'running'
           `, [`Connection failed: ${error.message}`]);
+
+          try {
+            await pool.query(
+              `UPDATE recommendation_generation_runs
+               SET status = 'failed', completed_at = NOW(), error_message = $1
+               WHERE run_id = $2`,
+              [`Connection failed: ${error.message}`, runId]
+            );
+          } catch (e) {
+            console.warn('Could not update recommendation_generation_runs failed:', e.message);
+          }
         } catch (dbError) {
           console.error('Error updating generation status:', dbError);
         }
@@ -1208,6 +1369,7 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
       success: true, 
       message: 'Recommendation generation started',
       startedAt: now,
+      runId,
     });
   } catch (error) {
     console.error('Error triggering recommendation generation:', error);
@@ -1264,6 +1426,88 @@ app.get('/api/v1/recommendations/generation-status', async (req, res) => {
 });
 
 /**
+ * Get the status of a specific recommendation generation run
+ */
+app.get('/api/v1/recommendations/generation-status/:runId', async (req, res) => {
+  const { runId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `SELECT run_id, status, started_at, completed_at, symbols, error_message
+       FROM recommendation_generation_runs
+       WHERE run_id = $1`,
+      [runId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Run not found', runId });
+    }
+
+    const row = result.rows[0];
+    res.json({
+      runId: row.run_id,
+      status: row.status,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      symbols: row.symbols ? JSON.parse(row.symbols) : null,
+      errorMessage: row.error_message,
+    });
+  } catch (error) {
+    console.error('Error getting generation status for run:', error);
+    res.status(500).json({ error: 'Failed to get generation status', runId });
+  }
+});
+
+/**
+ * Map a stock_recommendations DB row (snake_case) to the API response shape (camelCase)
+ * expected by the web-app TypeScript types.
+ */
+function mapStockRecommendationRow(row) {
+  const asNumberOrNull = (v) => (v === null || v === undefined ? null : parseFloat(v))
+
+  let explanation = row.explanation
+  if (typeof explanation === 'string') {
+    try {
+      explanation = JSON.parse(explanation)
+    } catch {
+      // leave as-is
+    }
+  }
+
+  let dataSourcesUsed = row.data_sources_used
+  if (typeof dataSourcesUsed === 'string') {
+    try {
+      dataSourcesUsed = JSON.parse(dataSourcesUsed)
+    } catch {
+      // leave as-is
+    }
+  }
+
+  return {
+    id: row.id,
+    symbol: row.symbol,
+    action: row.action,
+    score: asNumberOrNull(row.score),
+    normalizedScore: asNumberOrNull(row.normalized_score),
+    confidence: asNumberOrNull(row.confidence),
+    priceAtRecommendation: asNumberOrNull(row.price_at_recommendation),
+    newsSentimentScore: asNumberOrNull(row.news_sentiment_score),
+    newsMomentumScore: asNumberOrNull(row.news_momentum_score),
+    technicalTrendScore: asNumberOrNull(row.technical_trend_score),
+    technicalMomentumScore: asNumberOrNull(row.technical_momentum_score),
+    rsi: asNumberOrNull(row.rsi),
+    macdHistogram: asNumberOrNull(row.macd_histogram),
+    priceVsSma20: asNumberOrNull(row.price_vs_sma20),
+    newsSentiment1d: asNumberOrNull(row.news_sentiment_1d),
+    articleCount24h: row.article_count_24h,
+    explanation,
+    generatedAt: row.generated_at,
+    dataSourcesUsed,
+    createdAt: row.created_at,
+  }
+}
+
+/**
  * Get latest recommendations for all stocks
  * Returns the most recent recommendation for each symbol
  */
@@ -1299,28 +1543,7 @@ app.get('/api/v1/recommendations', async (req, res) => {
     `, [parseInt(limit)]);
     
     res.json({
-      recommendations: result.rows.map(row => ({
-        id: row.id,
-        symbol: row.symbol,
-        action: row.action,
-        score: parseFloat(row.score),
-        normalizedScore: parseFloat(row.normalized_score),
-        confidence: parseFloat(row.confidence),
-        priceAtRecommendation: row.price_at_recommendation ? parseFloat(row.price_at_recommendation) : null,
-        newsSentimentScore: row.news_sentiment_score ? parseFloat(row.news_sentiment_score) : null,
-        newsMomentumScore: row.news_momentum_score ? parseFloat(row.news_momentum_score) : null,
-        technicalTrendScore: row.technical_trend_score ? parseFloat(row.technical_trend_score) : null,
-        technicalMomentumScore: row.technical_momentum_score ? parseFloat(row.technical_momentum_score) : null,
-        rsi: row.rsi ? parseFloat(row.rsi) : null,
-        macdHistogram: row.macd_histogram ? parseFloat(row.macd_histogram) : null,
-        priceVsSma20: row.price_vs_sma20 ? parseFloat(row.price_vs_sma20) : null,
-        newsSentiment1d: row.news_sentiment_1d ? parseFloat(row.news_sentiment_1d) : null,
-        articleCount24h: row.article_count_24h,
-        explanation: row.explanation,
-        generatedAt: row.generated_at,
-        dataSourcesUsed: row.data_sources_used,
-        createdAt: row.created_at,
-      })),
+      recommendations: result.rows.map(mapStockRecommendationRow),
       count: result.rows.length,
     });
   } catch (error) {
@@ -1368,28 +1591,7 @@ app.get('/api/v1/recommendations/history/:symbol', async (req, res) => {
     
     res.json({
       symbol: symbol.toUpperCase(),
-      recommendations: result.rows.map(row => ({
-        id: row.id,
-        symbol: row.symbol,
-        action: row.action,
-        score: parseFloat(row.score),
-        normalizedScore: parseFloat(row.normalized_score),
-        confidence: parseFloat(row.confidence),
-        priceAtRecommendation: row.price_at_recommendation ? parseFloat(row.price_at_recommendation) : null,
-        newsSentimentScore: row.news_sentiment_score ? parseFloat(row.news_sentiment_score) : null,
-        newsMomentumScore: row.news_momentum_score ? parseFloat(row.news_momentum_score) : null,
-        technicalTrendScore: row.technical_trend_score ? parseFloat(row.technical_trend_score) : null,
-        technicalMomentumScore: row.technical_momentum_score ? parseFloat(row.technical_momentum_score) : null,
-        rsi: row.rsi ? parseFloat(row.rsi) : null,
-        macdHistogram: row.macd_histogram ? parseFloat(row.macd_histogram) : null,
-        priceVsSma20: row.price_vs_sma20 ? parseFloat(row.price_vs_sma20) : null,
-        newsSentiment1d: row.news_sentiment_1d ? parseFloat(row.news_sentiment_1d) : null,
-        articleCount24h: row.article_count_24h,
-        explanation: row.explanation,
-        generatedAt: row.generated_at,
-        dataSourcesUsed: row.data_sources_used,
-        createdAt: row.created_at,
-      })),
+      recommendations: result.rows.map(mapStockRecommendationRow),
       count: result.rows.length,
     });
   } catch (error) {
@@ -2339,6 +2541,52 @@ app.get('/api/big-cap-losers/top-news/:symbol', async (req, res) => {
     res.json({ symbol, articles: rows });
   } catch (e) {
     console.error('Error fetching top news from ClickHouse:', e.message);
+    res.status(500).json({ error: 'Failed to fetch top news' });
+  }
+});
+
+/**
+ * GET /api/v1/recommendations/top-news/:symbol
+ * Fetch Top 10 news articles for a symbol directly from ClickHouse (last 7d)
+ */
+app.get('/api/v1/recommendations/top-news/:symbol', async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || '').toUpperCase();
+    if (!symbol) return res.status(400).json({ error: 'symbol required' });
+
+    const sql = `
+      SELECT
+        title,
+        url,
+        source,
+        source_name,
+        published_at,
+        sentiment_score,
+        sentiment_label,
+        sentiment_confidence
+      FROM news_articles
+      WHERE has(symbols, '${symbol}')
+        AND published_at >= now() - INTERVAL 7 DAY
+      ORDER BY (sentiment_confidence * abs(sentiment_score)) DESC, published_at DESC
+      LIMIT 10
+      FORMAT JSON
+    `;
+
+    const raw = await queryClickHouse(sql);
+    const parsed = JSON.parse(raw);
+    const rows = (parsed.data || []).map(r => ({
+      title: r.title,
+      url: r.url,
+      source: r.source_name || r.source,
+      published_at: r.published_at,
+      sentiment: r.sentiment_label,
+      sentiment_score: r.sentiment_score,
+      confidence: r.sentiment_confidence,
+    }));
+
+    res.json({ symbol, articles: rows });
+  } catch (e) {
+    console.error('Error fetching top news from ClickHouse (recommendations):', e.message);
     res.status(500).json({ error: 'Failed to fetch top news' });
   }
 });

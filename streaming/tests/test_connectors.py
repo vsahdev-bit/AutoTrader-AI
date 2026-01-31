@@ -16,6 +16,7 @@ import pytest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 import os
+import aiohttp
 
 # Import connectors
 from streaming.connectors.base import (
@@ -231,6 +232,48 @@ class TestAlphaVantageConnector:
         
         with pytest.raises(ValueError, match="API key is required"):
             await connector.fetch_news(symbols=["AAPL"])
+
+
+# =============================================================================
+# BaseNewsConnector Utilities Tests
+# =============================================================================
+
+class TestBaseNewsConnectorUtilities:
+    def test_sanitize_url_for_logs_redacts_token(self):
+        safe = BaseNewsConnector._sanitize_url_for_logs(
+            "https://api.benzinga.com/api/v2/news",
+            params={"token": "super-secret", "pageSize": 1},
+        )
+        assert "super-secret" not in safe
+        assert "token=REDACTED" in safe
+
+    def test_is_retryable_exception_does_not_retry_auth_failures(self):
+        exc_401 = aiohttp.ClientResponseError(
+            request_info=MagicMock(real_url="https://example.com"),
+            history=(),
+            status=401,
+            message="Unauthorized",
+            headers={},
+        )
+        assert BaseNewsConnector._is_retryable_exception(exc_401) is False
+
+        exc_403 = aiohttp.ClientResponseError(
+            request_info=MagicMock(real_url="https://example.com"),
+            history=(),
+            status=403,
+            message="Forbidden",
+            headers={},
+        )
+        assert BaseNewsConnector._is_retryable_exception(exc_403) is False
+
+        exc_500 = aiohttp.ClientResponseError(
+            request_info=MagicMock(real_url="https://example.com"),
+            history=(),
+            status=500,
+            message="Server error",
+            headers={},
+        )
+        assert BaseNewsConnector._is_retryable_exception(exc_500) is True
 
 
 # =============================================================================

@@ -93,6 +93,10 @@ services:
       context: ../..
       dockerfile: ml-services/recommendation-engine/Dockerfile.service
     container_name: autotrader-recommendation-engine
+    logging:
+      options:
+        max-size: "25m"
+        max-file: "5"
     ports:
       - "8000:8000"
     environment:
@@ -129,6 +133,10 @@ services:
       context: ../..
       dockerfile: ml-services/Dockerfile.news
     container_name: autotrader-news-ingestion
+    logging:
+      options:
+        max-size: "25m"
+        max-file: "5"
     environment:
       - VAULT_ADDR=http://vault:8200
       - VAULT_TOKEN=local-dev-token

@@ -173,6 +173,54 @@ export async function searchStocks(query: string): Promise<StockSearchResult[]> 
   return response.json();
 }
 
+// ============== OPTIONS WATCHLIST API ==============
+
+export interface OptionsWatchlistItem {
+  id: string
+  user_id: string
+  symbol: string
+  company_name: string | null
+  exchange: string | null
+  added_at: string
+}
+
+export async function getOptionsWatchlist(userId: string): Promise<OptionsWatchlistItem[]> {
+  const response = await fetch(`${API_BASE}/options/${userId}/watchlist`)
+  if (!response.ok) {
+    throw new Error('Failed to load options watchlist')
+  }
+  return response.json()
+}
+
+export async function addToOptionsWatchlist(
+  userId: string,
+  stock: { symbol: string; companyName?: string; exchange?: string }
+): Promise<OptionsWatchlistItem> {
+  const response = await fetch(`${API_BASE}/options/${userId}/watchlist`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol: stock.symbol,
+      companyName: stock.companyName,
+      exchange: stock.exchange,
+    }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || 'Failed to add to options watchlist')
+  }
+  return response.json()
+}
+
+export async function removeFromOptionsWatchlist(userId: string, symbol: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/options/${userId}/watchlist/${symbol}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    throw new Error('Failed to remove from options watchlist')
+  }
+}
+
 // Complete onboarding
 export async function completeOnboarding(userId: string): Promise<OnboardingStatus> {
   const response = await fetch(`${API_BASE}/onboarding/${userId}/complete`, {

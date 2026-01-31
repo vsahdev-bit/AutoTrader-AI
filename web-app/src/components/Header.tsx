@@ -32,7 +32,7 @@ const navItems: NavItem[] = [
   { label: 'Recommendations', path: '/recommendations' },
   { label: 'Jim Cramer Advice', path: '/jim-cramer' },
   { label: 'Big Cap Losers', path: '/big-cap-losers' },
-  { label: 'Connectors', path: '/connectors' },
+  { label: 'Options', path: '/options' },
 ]
 
 export default function Header() {
@@ -105,15 +105,6 @@ export default function Header() {
                   }`}
                 >
                   {item.label}
-                  {/* Show error indicator on Connectors tab when there are issues */}
-                  {item.path === '/connectors' && connectorErrors > 0 && (
-                    <span className="relative flex items-center" title={`${connectorErrors} connector${connectorErrors > 1 ? 's' : ''} with issues`}>
-                      <svg className="w-4 h-4 text-red-500" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
-                      <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                    </span>
-                  )}
                 </button>
               ))}
             </nav>
@@ -131,6 +122,11 @@ export default function Header() {
             <div className="hidden sm:block">
               <p className="text-sm font-medium text-gray-900">{user?.name || 'Trader'}</p>
               <p className="text-xs text-gray-500">{user?.email}</p>
+              {import.meta.env.DEV && (
+                <p className="text-[10px] text-gray-400" title={user?.dbId || 'no dbId'}>
+                  DB: {user?.dbId ? user.dbId.slice(0, 8) : 'missing'}
+                </p>
+              )}
             </div>
             <button
               onClick={handleLogout}
@@ -154,15 +150,6 @@ export default function Header() {
               }`}
             >
               {item.label}
-              {/* Show error indicator on Connectors tab when there are issues */}
-              {item.path === '/connectors' && connectorErrors > 0 && (
-                <span className="relative flex items-center">
-                  <svg className="w-3.5 h-3.5 text-red-500" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></span>
-                </span>
-              )}
             </button>
           ))}
         </nav>

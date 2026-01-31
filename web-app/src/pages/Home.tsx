@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { GoogleLogin, CredentialResponse } from '@react-oauth/google'
 import { useAuth } from '../context/AuthContext'
@@ -7,6 +7,7 @@ import { isGoogleOAuthConfigured } from '../config/google'
 export default function Home() {
   const navigate = useNavigate()
   const { login, isAuthenticated, isLoading, isCheckingOnboarding, isOnboardingComplete } = useAuth()
+  const [authError, setAuthError] = useState<string | null>(null)
 
   useEffect(() => {
     // Wait until auth loading AND onboarding check are complete before redirecting
@@ -22,12 +23,15 @@ export default function Home() {
 
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
     try {
+      setAuthError(null)
       if (credentialResponse.credential) {
         await login(credentialResponse.credential)
         // Navigation will be handled by the useEffect above after state updates
       }
     } catch (error) {
       console.error('Login failed:', error)
+      const { toFriendlyAuthErrorMessage } = await import('../utils/authErrors')
+      setAuthError(toFriendlyAuthErrorMessage(error))
     }
   }
 
@@ -119,6 +123,12 @@ export default function Home() {
               {/* Login Card */}
               <div id="login" className="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 max-w-md">
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Start Trading Now</h3>
+
+                {authError && (
+                  <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
+                    {authError}
+                  </div>
+                )}
                 
                 {isGoogleOAuthConfigured() ? (
                   <div className="flex justify-center">

@@ -11,6 +11,7 @@ import GetRecommendation from './pages/GetRecommendation'
 import Connectors from './pages/Connectors'
 import JimCramerAdvice from './pages/JimCramerAdvice'
 import BigCapLosers from './pages/BigCapLosers'
+import Options from './pages/Options'
 // Public pages
 import Pricing from './pages/Pricing'
 import FAQ from './pages/FAQ'
@@ -93,6 +94,9 @@ function AppRoutes() {
         
         {/* Big Cap Losers - track large-cap stocks with significant drops */}
         <Route path="/big-cap-losers" element={<BigCapLosers />} />
+
+        {/* Options */}
+        <Route path="/options" element={<Options />} />
         
         {/* Onboarding route - protected, but accessible only if onboarding not complete */}
         <Route
