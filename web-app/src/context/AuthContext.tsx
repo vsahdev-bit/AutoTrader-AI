@@ -83,11 +83,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (storedUser) {
       try {
         const parsedUser = JSON.parse(storedUser)
-        setUser(parsedUser)
-        // Set checking flag before async call
-        setIsCheckingOnboarding(true)
-        // Check onboarding completion for restored user
-        checkOnboardingCompletion(parsedUser)
+
+        // If we somehow have a stored session without dbId, it cannot be used
+        // for DB-backed pages. Clear it and require re-login.
+        if (!parsedUser?.dbId) {
+          localStorage.removeItem('autotrader_user')
+        } else {
+          setUser(parsedUser)
+          // Set checking flag before async call
+          setIsCheckingOnboarding(true)
+          // Check onboarding completion for restored user
+          checkOnboardingCompletion(parsedUser)
+        }
       } catch {
         localStorage.removeItem('autotrader_user')
       }
@@ -108,20 +115,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sub: payload.sub,
       }
 
-      // Authenticate with backend and get/create user
-      try {
-        const response = await authenticateUser({
-          email: payload.email,
-          name: payload.name,
-          picture: payload.picture,
-          googleId: payload.sub,
-        })
-        
-        // Store database user ID
-        userData.dbId = response.user.id
-      } catch (error) {
-        console.error('Backend auth failed, continuing with local auth:', error)
+      // Authenticate with backend and get/create user.
+      // This app is DB-backed: without a DB user id (dbId) we cannot load
+      // onboarding/watchlists/recommendations, so treat backend auth failure
+      // as a login failure (no "local auth" fallback).
+      const response = await authenticateUser({
+        email: payload.email,
+        name: payload.name,
+        picture: payload.picture,
+        googleId: payload.sub,
+      })
+
+      if (!response?.user?.id) {
+        throw new Error('Backend authentication did not return a user id')
       }
+
+      // Store database user ID
+      userData.dbId = response.user.id
 
       setUser(userData)
       localStorage.setItem('autotrader_user', JSON.stringify(userData))

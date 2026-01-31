@@ -41,6 +41,7 @@ import signal
 import time
 import asyncio
 import asyncpg
+import json
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
@@ -1839,6 +1840,96 @@ async def run_http_server():
             content={"success": True, "message": "Recommendation generation started"},
             status_code=202
         )
+
+    @app.post("/recommendations")
+    async def generate_recommendations_sync(request: dict):
+        """Synchronous batch recommendation generation (used by api-gateway).
+
+        Request body:
+          - user_id: string
+          - symbols: list[string]
+          - include_features: bool (optional)
+          - save_to_db: bool (optional)
+
+        Generates recommendations for the given symbols and optionally persists
+        them into Postgres (stock_recommendations).
+        """
+        user_id = request.get("user_id", "system")
+        symbols = request.get("symbols") or []
+        include_features = bool(request.get("include_features", False))
+        save_to_db = bool(request.get("save_to_db", False))
+
+        if not isinstance(symbols, list) or len(symbols) == 0:
+            return JSONResponse(content={"error": "symbols must be a non-empty list"}, status_code=400)
+
+        # Ensure service is initialized
+        if service.engine is None:
+            await service.initialize()
+
+        recs = []
+
+        async def _save_to_db(symbol: str, rec_obj) -> None:
+            if not service.db_pool:
+                return
+            # Insert minimal record required by schema
+            await service.db_pool.execute(
+                """
+                INSERT INTO stock_recommendations (
+                    symbol, action, score, normalized_score, confidence,
+                    price_at_recommendation,
+                    news_sentiment_score, news_momentum_score,
+                    technical_trend_score, technical_momentum_score,
+                    rsi, macd_histogram, price_vs_sma20,
+                    news_sentiment_1d, article_count_24h,
+                    explanation, data_sources_used, generated_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+                """,
+                symbol,
+                rec_obj.action,
+                float(rec_obj.score) if rec_obj.score is not None else 0.0,
+                float(rec_obj.normalized_score) if rec_obj.normalized_score is not None else 0.5,
+                float(rec_obj.confidence) if rec_obj.confidence is not None else 0.0,
+                rec_obj.price_at_recommendation,
+                rec_obj.news_sentiment_score,
+                rec_obj.news_momentum_score,
+                rec_obj.technical_trend_score,
+                rec_obj.technical_momentum_score,
+                rec_obj.rsi,
+                rec_obj.macd_histogram,
+                rec_obj.price_vs_sma20,
+                rec_obj.news_sentiment_1d,
+                rec_obj.article_count_24h or 0,
+                json.dumps(rec_obj.explanation) if rec_obj.explanation else None,
+                ['news', 'technical'],
+            )
+
+        for s in symbols:
+            sym = str(s).upper().strip()
+            try:
+                rec_obj = await service.engine.generate_recommendation(symbol=sym, include_features=include_features)
+                if save_to_db:
+                    try:
+                        await _save_to_db(sym, rec_obj)
+                    except Exception as e:
+                        logger.warning(f"Failed to persist {sym} (batch): {e}")
+
+                recs.append(rec_obj.dict() if hasattr(rec_obj, 'dict') else rec_obj)
+            except Exception as e:
+                logger.error(f"Batch generation failed for {sym}: {e}")
+                recs.append({
+                    "symbol": sym,
+                    "action": "HOLD",
+                    "confidence": 0.0,
+                    "score": 0.0,
+                    "normalized_score": 0.5,
+                    "explanation": {"summary": f"Unable to analyze {sym}", "error": str(e)},
+                })
+
+        return {
+            "user_id": user_id,
+            "recommendations": recs,
+            "generated_at": datetime.utcnow().isoformat(),
+        }
     
     @app.post("/generate-sync")
     async def generate_recommendations_sync():
@@ -2071,6 +2162,88 @@ async def run_with_api():
                 content={"success": True, "message": "Recommendation generation started"},
                 status_code=202
             )
+
+        @app.post("/recommendations")
+        async def generate_recommendations_sync(request: dict):
+            """Synchronous batch recommendation generation (used by api-gateway).
+
+            See run_http_server() version for docs. This is duplicated here because
+            the production container runs run_with_api().
+            """
+            user_id = request.get("user_id", "system")
+            symbols = request.get("symbols") or []
+            include_features = bool(request.get("include_features", False))
+            save_to_db = bool(request.get("save_to_db", False))
+
+            if not isinstance(symbols, list) or len(symbols) == 0:
+                return JSONResponse(content={"error": "symbols must be a non-empty list"}, status_code=400)
+
+            if service.engine is None:
+                await service.initialize()
+
+            recs = []
+
+            async def _save_to_db(symbol: str, rec_obj) -> None:
+                if not service.db_pool:
+                    return
+                await service.db_pool.execute(
+                    """
+                    INSERT INTO stock_recommendations (
+                        symbol, action, score, normalized_score, confidence,
+                        price_at_recommendation,
+                        news_sentiment_score, news_momentum_score,
+                        technical_trend_score, technical_momentum_score,
+                        rsi, macd_histogram, price_vs_sma20,
+                        news_sentiment_1d, article_count_24h,
+                        explanation, data_sources_used, generated_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+                    """,
+                    symbol,
+                    rec_obj.action,
+                    float(rec_obj.score) if rec_obj.score is not None else 0.0,
+                    float(rec_obj.normalized_score) if rec_obj.normalized_score is not None else 0.5,
+                    float(rec_obj.confidence) if rec_obj.confidence is not None else 0.0,
+                    rec_obj.price_at_recommendation,
+                    rec_obj.news_sentiment_score,
+                    rec_obj.news_momentum_score,
+                    rec_obj.technical_trend_score,
+                    rec_obj.technical_momentum_score,
+                    rec_obj.rsi,
+                    rec_obj.macd_histogram,
+                    rec_obj.price_vs_sma20,
+                    rec_obj.news_sentiment_1d,
+                    rec_obj.article_count_24h or 0,
+                    json.dumps(rec_obj.explanation) if rec_obj.explanation else None,
+                    ['news', 'technical'],
+                )
+
+            for s in symbols:
+                sym = str(s).upper().strip()
+                try:
+                    rec_obj = await service.engine.generate_recommendation(symbol=sym, include_features=include_features)
+                    if save_to_db:
+                        try:
+                            await _save_to_db(sym, rec_obj)
+                        except Exception as e:
+                            logger.warning(f"Failed to persist {sym} (batch): {e}")
+
+                    recs.append(rec_obj.dict() if hasattr(rec_obj, 'dict') else rec_obj)
+                except Exception as e:
+                    logger.error(f"Batch generation failed for {sym}: {e}")
+                    recs.append({
+                        "symbol": sym,
+                        "action": "HOLD",
+                        "confidence": 0.0,
+                        "score": 0.0,
+                        "normalized_score": 0.5,
+                        "explanation": {"summary": f"Unable to analyze {sym}", "error": str(e)},
+                    })
+
+            return {
+                "user_id": user_id,
+                "recommendations": recs,
+                "generated_at": datetime.utcnow().isoformat(),
+            }
         
         def _sanitize_for_json(obj):
             """Recursively replace NaN/Inf with None so JSON serialization never fails."""

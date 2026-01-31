@@ -24,7 +24,8 @@ import logging
 import asyncio
 import os
 import aiohttp
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+from yarl import URL
 
 logger = logging.getLogger(__name__)
 
@@ -316,9 +317,37 @@ class BaseNewsConnector(ABC):
         # Record this request
         self._request_times.append(datetime.utcnow())
     
+    @staticmethod
+    def _is_retryable_exception(exc: Exception) -> bool:
+        """Return True if a request exception should be retried.
+
+        We avoid retrying authentication/authorization failures (401/403) because
+        those are not transient and retries just add latency and noise.
+        """
+        if isinstance(exc, aiohttp.ClientResponseError):
+            return exc.status not in (401, 403)
+        return True
+
+    @staticmethod
+    def _sanitize_url_for_logs(url: str, params: Optional[Dict[str, Any]] = None) -> str:
+        """Return a URL safe for logs (redacts common credential query params)."""
+        try:
+            u = URL(url)
+            if params:
+                u = u.update_query(params)
+            q = dict(u.query)
+            for key in ("token", "apikey", "api_key", "key", "access_token", "bearer"):  # common patterns
+                if key in q:
+                    q[key] = "REDACTED"
+            return str(u.with_query(q))
+        except Exception:
+            return url
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(_is_retryable_exception),
+        reraise=True,
     )
     async def _make_request(
         self,
@@ -348,19 +377,45 @@ class BaseNewsConnector(ABC):
         session = await self._get_session()
         self.total_requests += 1
         
+        safe_url = self._sanitize_url_for_logs(url, params)
+
         try:
             if method.upper() == "GET":
                 async with session.get(url, params=params, headers=headers) as response:
-                    response.raise_for_status()
+                    if response.status >= 400:
+                        # Capture body for better diagnostics (do not assume JSON on errors)
+                        body = (await response.text())[:2000]
+                        logger.warning(
+                            "HTTP %s from %s (connector=%s). Response body (truncated): %r",
+                            response.status,
+                            safe_url,
+                            self.__class__.__name__,
+                            body,
+                        )
+                        response.raise_for_status()
                     return await response.json()
             else:
                 async with session.post(url, json=params, headers=headers) as response:
-                    response.raise_for_status()
+                    if response.status >= 400:
+                        body = (await response.text())[:2000]
+                        logger.warning(
+                            "HTTP %s from %s (connector=%s). Response body (truncated): %r",
+                            response.status,
+                            safe_url,
+                            self.__class__.__name__,
+                            body,
+                        )
+                        response.raise_for_status()
                     return await response.json()
-                    
+
         except Exception as e:
             self.failed_requests += 1
-            logger.error(f"Request failed for {self.__class__.__name__}: {e}")
+            logger.error(
+                "Request failed for %s: %s (url=%s)",
+                self.__class__.__name__,
+                e,
+                safe_url,
+            )
             raise
     
     @abstractmethod

@@ -367,15 +367,53 @@ class NewsIngestionService:
                 a.image_url,
             ])
         
+        # IMPORTANT: ClickHouse schema is the contract.
+        # We store metadata + summary + derived sentiment features (no full article body).
         column_names = [
-            'id', 'title', 'source', 'url', 'published_at', 'fetched_at',
-            'content', 'summary', 'symbols', 'categories', 'sentiment_score',
-            'sentiment_label', 'confidence', 'relevance_score', 'language',
-            'author', 'image_url'
+            'article_id',
+            'title',
+            'summary',
+            'url',
+            'source',
+            'source_name',
+            'published_at',
+            'fetched_at',
+            'symbols',
+            'categories',
+            'sentiment_score',
+            'sentiment_label',
+            'sentiment_confidence',
+            'sentiment_analyzer',
+            'sentiment_reasoning',
+            'author',
+            'image_url',
         ]
-        
+
+        # Remap rows to match the column_names above
+        remapped_rows = []
+        for a in articles:
+            remapped_rows.append([
+                a.article_id,
+                a.title,
+                a.summary,
+                a.url,
+                a.source,
+                a.source,  # source_name (best-effort)
+                a.published_at,
+                a.fetched_at,
+                a.symbols,
+                a.categories,
+                a.sentiment_score,
+                a.sentiment_label,
+                a.confidence,
+                'unknown',  # sentiment_analyzer (best-effort)
+                None,       # sentiment_reasoning
+                a.author if a.author else None,
+                a.image_url if a.image_url else None,
+            ])
+
         try:
-            self.ch_client.insert('news_articles', rows, column_names=column_names)
+            self.ch_client.insert('news_articles', remapped_rows, column_names=column_names)
             logger.info(f"✓ Stored {len(articles)} articles in ClickHouse")
         except Exception as e:
             logger.error(f"✗ Failed to store in ClickHouse: {e}")

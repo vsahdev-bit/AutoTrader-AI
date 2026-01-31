@@ -115,6 +115,7 @@ class RecommendationRequest(BaseModel):
     user_id: str = Field(..., description="User ID requesting recommendations")
     symbols: List[str] = Field(..., description="Stock symbols to analyze")
     include_features: bool = Field(False, description="Include feature details in response")
+    save_to_db: bool = Field(False, description="Whether to persist recommendations to PostgreSQL")
 
 
 class RegimeInfo(BaseModel):
@@ -1121,7 +1122,8 @@ Be specific, cite actual data points, and avoid generic statements."""
                 try:
                     if provider == 'openai':
                         from openai import AsyncOpenAI
-                        api_key = os.getenv('OPENAI_API_KEY')
+                        from vault_client import get_api_key_vault_only
+                        api_key = await get_api_key_vault_only('openai')
                         if not api_key:
                             continue
                         client = AsyncOpenAI(api_key=api_key)
@@ -1135,7 +1137,8 @@ Be specific, cite actual data points, and avoid generic statements."""
                     
                     elif provider == 'anthropic':
                         from anthropic import AsyncAnthropic
-                        api_key = os.getenv('ANTHROPIC_API_KEY')
+                        from vault_client import get_api_key_vault_only
+                        api_key = await get_api_key_vault_only('anthropic')
                         if not api_key:
                             continue
                         client = AsyncAnthropic(api_key=api_key)
@@ -1148,7 +1151,8 @@ Be specific, cite actual data points, and avoid generic statements."""
                     
                     elif provider == 'groq':
                         from groq import AsyncGroq
-                        api_key = os.getenv('GROQ_API_KEY')
+                        from vault_client import get_api_key_vault_only
+                        api_key = await get_api_key_vault_only('groq')
                         if not api_key:
                             continue
                         client = AsyncGroq(api_key=api_key)
@@ -1610,22 +1614,64 @@ async def generate_recommendations(request: RecommendationRequest):
     
     engine = await get_engine()
     
-    recommendations = []
+    recommendations: List[Recommendation] = []
+    
+    # Optional DB persistence (used by scheduled runs and on-demand batch generation)
+    db_pool = await get_db_pool() if request.save_to_db else None
+
     for symbol in request.symbols:
+        sym = symbol.upper().strip()
         try:
             rec = await engine.generate_recommendation(
-                symbol=symbol.upper(),
+                symbol=sym,
                 include_features=request.include_features,
             )
+
+            # Persist recommendation if requested and DB is available
+            if request.save_to_db and db_pool:
+                try:
+                    await db_pool.execute(
+                        """
+                        INSERT INTO stock_recommendations (
+                            symbol, action, score, normalized_score, confidence,
+                            price_at_recommendation, news_sentiment_score, news_momentum_score,
+                            technical_trend_score, technical_momentum_score,
+                            rsi, macd_histogram, price_vs_sma20,
+                            news_sentiment_1d, article_count_24h,
+                            explanation, data_sources_used, generated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+                        """,
+                        rec.symbol,
+                        rec.action,
+                        rec.score,
+                        rec.normalized_score,
+                        rec.confidence,
+                        rec.price_at_recommendation,
+                        rec.news_sentiment_score,
+                        rec.news_momentum_score,
+                        rec.technical_trend_score,
+                        rec.technical_momentum_score,
+                        rec.rsi,
+                        rec.macd_histogram,
+                        rec.price_vs_sma20,
+                        rec.news_sentiment_1d,
+                        rec.article_count_24h,
+                        json.dumps(rec.explanation) if rec.explanation else None,
+                        json.dumps(["news", "technical"]),
+                    )
+                    logger.info(f"Saved recommendation for {rec.symbol} to database (batch)")
+                except Exception as e:
+                    logger.warning(f"Failed to save batch recommendation for {rec.symbol} to database: {e}")
+
             recommendations.append(rec)
         except Exception as e:
-            logger.error(f"Failed to generate recommendation for {symbol}: {e}")
+            logger.error(f"Failed to generate recommendation for {sym}: {e}")
             # Return neutral recommendation on error
             recommendations.append(Recommendation(
-                symbol=symbol.upper(),
+                symbol=sym,
                 action="HOLD",
                 confidence=0.0,
-                explanation={"summary": f"Unable to analyze {symbol}", "error": str(e)},
+                explanation={"summary": f"Unable to analyze {sym}", "error": str(e)},
             ))
     
     return RecommendationResponse(
