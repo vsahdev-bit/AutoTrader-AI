@@ -182,6 +182,7 @@ export interface OptionsWatchlistItem {
   company_name: string | null
   exchange: string | null
   added_at: string
+  is_starred?: boolean
 }
 
 export async function getOptionsWatchlist(userId: string): Promise<OptionsWatchlistItem[]> {
@@ -219,6 +220,24 @@ export async function removeFromOptionsWatchlist(userId: string, symbol: string)
   if (!response.ok) {
     throw new Error('Failed to remove from options watchlist')
   }
+}
+
+export async function setOptionsWatchlistStar(
+  userId: string,
+  symbol: string,
+  starred: boolean
+): Promise<OptionsWatchlistItem> {
+  const response = await fetch(`${API_BASE}/options/${userId}/watchlist/${symbol}/star`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ starred }),
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to update options watchlist star')
+  }
+
+  return response.json()
 }
 
 // Complete onboarding

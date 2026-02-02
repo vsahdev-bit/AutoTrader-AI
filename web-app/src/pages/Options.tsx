@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Header from '../components/Header'
 import { useAuth } from '../context/AuthContext'
-import { searchStocks, addToOptionsWatchlist, getOptionsWatchlist, removeFromOptionsWatchlist, OptionsWatchlistItem } from '../services/onboardingApi'
+import { searchStocks, addToOptionsWatchlist, getOptionsWatchlist, removeFromOptionsWatchlist, setOptionsWatchlistStar, OptionsWatchlistItem } from '../services/onboardingApi'
 import { stockQuotesApi, StockQuote } from '../services/api'
 
 interface StockSearchResult {
@@ -33,6 +33,9 @@ export default function Options() {
   const [items, setItems] = useState<OptionsWatchlistItem[]>([])
   const [quotes, setQuotes] = useState<Record<string, StockQuote>>({})
 
+  // Star UI state
+  const [starringSymbol, setStarringSymbol] = useState<string | null>(null)
+
   // Page state
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,7 +49,19 @@ export default function Options() {
   const dropdownRef = useRef<HTMLDivElement>(null)
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  const symbols = useMemo(() => items.map(i => i.symbol.toUpperCase()), [items])
+  const sortedItems = useMemo(() => {
+    const copy = [...items]
+    copy.sort((a, b) => {
+      const aStar = (a as any).is_starred ? 1 : 0
+      const bStar = (b as any).is_starred ? 1 : 0
+      if (aStar !== bStar) return bStar - aStar
+      return a.symbol.localeCompare(b.symbol)
+    })
+    return copy
+  }, [items])
+
+  const symbols = useMemo(() => sortedItems.map(i => i.symbol.toUpperCase()), [sortedItems])
+
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -152,6 +167,26 @@ export default function Options() {
       await refreshQuotes([sym, ...symbols])
     } catch (e: any) {
       alert(e?.message || 'Failed to add symbol')
+    }
+  }
+
+  const setStarred = async (symbol: string, starred: boolean) => {
+    if (!userId) return
+    const sym = symbol.toUpperCase()
+
+    setStarringSymbol(sym)
+
+    // Optimistic update
+    setItems(prev => prev.map(i => (i.symbol.toUpperCase() === sym ? { ...i, is_starred: starred } : i)))
+
+    try {
+      const updated = await setOptionsWatchlistStar(userId, sym, starred)
+      setItems(prev => prev.map(i => (i.symbol.toUpperCase() === sym ? { ...i, is_starred: (updated as any).is_starred } : i)))
+    } catch {
+      // Revert
+      setItems(prev => prev.map(i => (i.symbol.toUpperCase() === sym ? { ...i, is_starred: !starred } : i)))
+    } finally {
+      setStarringSymbol(null)
     }
   }
 
@@ -268,15 +303,13 @@ export default function Options() {
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Price</th>
-                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Change</th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Market Cap</th>
                     <th className="px-6 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {items.map((item) => {
+                  {sortedItems.map((item) => {
                     const sym = item.symbol.toUpperCase()
                     const q = quotes[sym]
                     const change = q?.change
@@ -293,17 +326,44 @@ export default function Options() {
                         ? 'text-green-600'
                         : 'text-red-600'
 
+                    const isStarred = (item as any).is_starred ?? false
+
                     return (
-                      <tr key={item.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap font-semibold text-gray-900">{sym}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                          {item.company_name || '-'}
+                      <tr key={item.id} className="group hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap font-semibold text-gray-900">
+                          <div className="flex items-center gap-2">
+                            <span>{sym}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (starringSymbol) return
+                                setStarred(sym, !isStarred)
+                              }}
+                              className={`transition-opacity ${isStarred ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} ${
+                                starringSymbol === sym ? 'opacity-50 cursor-wait' : 'hover:opacity-100'
+                              }`}
+                              title={isStarred ? 'Unstar' : 'Star'}
+                              aria-label={isStarred ? 'Unstar symbol' : 'Star symbol'}
+                            >
+                              {isStarred ? (
+                                <svg className="w-4 h-4 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
+                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.81c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                </svg>
+                              ) : (
+                                <svg className="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l2.054 6.316a1 1 0 00.95.69h6.646c.969 0 1.371 1.24.588 1.81l-5.377 3.906a1 1 0 00-.364 1.118l2.054 6.316c.3.921-.755 1.688-1.54 1.118l-5.377-3.906a1 1 0 00-1.175 0l-5.377 3.906c-.784.57-1.838-.197-1.539-1.118l2.054-6.316a1 1 0 00-.364-1.118L2.342 11.743c-.783-.57-.38-1.81.588-1.81h6.646a1 1 0 00.95-.69l2.054-6.316z" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
-                          {formatPrice(q?.price ?? null)}
-                        </td>
-                        <td className={`px-6 py-4 whitespace-nowrap text-right text-sm ${changeClass}`}>
-                          {changeText}
+                        <td className="px-6 py-4 whitespace-nowrap text-right">
+                          <div className="text-sm text-gray-900">
+                            {formatPrice(q?.price ?? null)}
+                          </div>
+                          <div className={`text-xs ${changeClass}`}>
+                            {changeText}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
                           {formatMarketCap(q?.marketCap ?? null)}

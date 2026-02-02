@@ -193,14 +193,18 @@ async def get_vault_client() -> VaultClient:
 
 
 async def get_api_key(provider: str) -> Optional[str]:
-    """
-    Convenience function to get an API key from Vault.
-    
+    """Convenience function to get an API key from Vault.
+
     Falls back to environment variable if Vault is unavailable.
-    
+
+    NOTE: This function uses a singleton VaultClient which maintains an
+    aiohttp session. We explicitly close it after each call to avoid
+    "Unclosed client session" warnings in short-lived scripts (like
+    `connector_health_service.py --once`).
+
     Args:
         provider: Provider name (e.g., 'polygon', 'iex_cloud')
-        
+
     Returns:
         API key string, or None if not found
     """
@@ -213,7 +217,9 @@ async def get_api_key(provider: str) -> Optional[str]:
         'finnhub': 'FINNHUB_API_KEY',
         'newsapi': 'NEWSAPI_API_KEY',
     }
-    
+
+    client: Optional[VaultClient] = None
+
     # Try Vault first
     try:
         client = await get_vault_client()
@@ -223,7 +229,14 @@ async def get_api_key(provider: str) -> Optional[str]:
             return api_key
     except Exception as e:
         logger.warning(f"Could not retrieve {provider} API key from Vault: {e}")
-    
+    finally:
+        # Best-effort cleanup for short-lived processes
+        try:
+            if client is not None:
+                await client.close()
+        except Exception:
+            pass
+
     # Fall back to environment variable
     env_var = env_var_map.get(provider, f"{provider.upper()}_API_KEY")
     api_key = os.getenv(env_var)

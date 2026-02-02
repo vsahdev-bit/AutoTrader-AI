@@ -39,8 +39,10 @@ import sys
 import uuid
 import argparse
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Iterable
 from dataclasses import dataclass
+
+import re
 
 # Add paths for imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -52,6 +54,40 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
+
+
+def normalize_symbols(raw: Iterable[str]) -> List[str]:
+    """Normalize and validate ticker symbols.
+
+    - Splits on whitespace/newlines/commas
+    - Uppercases and trims
+    - Keeps only [A-Z0-9.-] tickers (length 1-10)
+
+    This prevents garbage like "BE\nTRW" or "\nNTLA" from propagating.
+    """
+    out: List[str] = []
+    seen: Set[str] = set()
+
+    for item in raw or []:
+        if item is None:
+            continue
+        # Split any embedded whitespace/newlines/commas
+        parts = re.split(r"[\s,]+", str(item))
+        for p in parts:
+            sym = p.strip().upper()
+            if not sym:
+                continue
+            if not _TICKER_RE.match(sym):
+                continue
+            if sym in seen:
+                continue
+            seen.add(sym)
+            out.append(sym)
+
+    return out
 
 
 @dataclass
@@ -76,11 +112,52 @@ class ProcessedArticle:
     image_url: str
 
 
+async def load_symbols_from_postgres(max_symbols: int = 200) -> List[str]:
+    """Load symbols from Postgres user watchlists.
+
+    Uses DATABASE_URL (expected to be provided in docker-compose).
+    Returns a normalized, de-duped list.
+    """
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        logger.warning("DATABASE_URL not set; cannot load watchlist symbols")
+        return []
+
+    try:
+        import asyncpg
+    except Exception as e:
+        logger.warning(f"asyncpg not available; cannot load watchlist symbols: {e}")
+        return []
+
+    conn = None
+    try:
+        conn = await asyncpg.connect(dsn=db_url)
+        # Pull from both watchlists; UNION de-dupes at SQL-level.
+        rows = await conn.fetch(
+            """
+            SELECT symbol FROM user_watchlist
+            UNION
+            SELECT symbol FROM options_watchlist
+            """
+        )
+        symbols = normalize_symbols([r["symbol"] for r in rows])
+        if max_symbols and len(symbols) > max_symbols:
+            symbols = symbols[:max_symbols]
+        return symbols
+    except Exception as e:
+        logger.warning(f"Failed to load symbols from Postgres: {e}")
+        return []
+    finally:
+        try:
+            if conn is not None:
+                await conn.close()
+        except Exception:
+            pass
+
+
 class NewsIngestionService:
-    """
-    Service that fetches news, analyzes sentiment, and stores in ClickHouse.
-    """
-    
+    """Service that fetches news, analyzes sentiment, and stores in ClickHouse."""
+
     def __init__(
         self,
         symbols: List[str] = None,
@@ -89,6 +166,8 @@ class NewsIngestionService:
         clickhouse_user: str = "default",
         clickhouse_password: str = "",
         enable_sentiment: bool = True,
+        symbols_source: Optional[str] = None,
+        max_symbols: Optional[int] = None,
     ):
         """
         Initialize the news ingestion service.
@@ -101,7 +180,9 @@ class NewsIngestionService:
             clickhouse_password: ClickHouse password
             enable_sentiment: Whether to run sentiment analysis
         """
-        self.symbols = symbols or ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "META", "NVDA"]
+        self.symbols = normalize_symbols(symbols) if symbols else None
+        self.symbols_source = (symbols_source or os.getenv("NEWS_SYMBOLS_SOURCE", "default")).strip().lower()
+        self.max_symbols = max_symbols or int(os.getenv("NEWS_MAX_SYMBOLS", "200"))
         self.clickhouse_host = clickhouse_host
         self.clickhouse_port = clickhouse_port
         self.clickhouse_user = clickhouse_user
@@ -460,9 +541,9 @@ async def main():
     args = parser.parse_args()
     
     # Parse symbols
-    symbols = None
+    symbols: Optional[List[str]] = None
     if args.symbols:
-        symbols = [s.strip().upper() for s in args.symbols.split(",")]
+        symbols = normalize_symbols(args.symbols.split(","))
     
     # Get ClickHouse config from environment
     ch_host = os.getenv("CLICKHOUSE_HOST", "localhost")
@@ -478,11 +559,26 @@ async def main():
         clickhouse_user=ch_user,
         clickhouse_password=ch_password,
         enable_sentiment=not args.no_sentiment,
+        symbols_source=os.getenv("NEWS_SYMBOLS_SOURCE", "default"),
+        max_symbols=int(os.getenv("NEWS_MAX_SYMBOLS", "200")),
     )
     
     try:
+        # If no explicit --symbols were provided, optionally load from Postgres watchlists.
+        if not service.symbols:
+            if service.symbols_source in ("watchlist", "postgres", "db"):
+                loaded = await load_symbols_from_postgres(max_symbols=service.max_symbols)
+                if loaded:
+                    service.symbols = loaded
+                    logger.info(f"Loaded {len(service.symbols)} symbols from Postgres watchlists")
+                else:
+                    logger.warning("No symbols loaded from Postgres watchlists; falling back to default mega-cap list")
+                    service.symbols = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "META", "NVDA"]
+            else:
+                service.symbols = ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA", "META", "NVDA"]
+
         await service.initialize()
-        
+
         if args.once:
             await service.run_once()
         else:

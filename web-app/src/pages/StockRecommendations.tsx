@@ -657,9 +657,11 @@ function StockRecommendationTable({
                 run {runId.slice(0, 8)}
               </span>
             )}
-            <button
-              onClick={() => onGenerate(symbol)}
-              disabled={isGenerating}
+          </div>
+
+          <button
+            onClick={() => onGenerate(symbol)}
+            disabled={isGenerating}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center gap-2 ${
               isGenerating
                 ? 'text-gray-400 bg-gray-100 cursor-not-allowed'
@@ -670,16 +672,15 @@ function StockRecommendationTable({
             <svg className={`w-3.5 h-3.5 ${isGenerating ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
-            {isGenerating ? 'Generating...' : 'Generate'}
-            </button>
-          </div>
+            {isGenerating ? 'Generating...' : 'Generate Recommendation'}
+          </button>
         </div>
 
         {/* Grid layout for perfect vertical alignment */}
         <div className="grid grid-cols-5 gap-4">
           {/* Row 1: Labels */}
           <p className="text-sm text-gray-500">Symbol</p>
-          <p className="text-sm text-gray-500">Rating</p>
+          <p className="text-sm text-gray-500 text-center">Rating</p>
           {/* Market Regime Label with Info Tooltip */}
           <div className="flex items-center gap-1 relative group/regimeinfo">
             <p className="text-sm text-gray-500">Market Regime</p>
@@ -837,14 +838,16 @@ function StockRecommendationTable({
                 className="text-gray-900"
               />
             </h2>
-            <p className="text-xs text-gray-400 truncate">{companyName}</p>
+            {companyName && companyName !== symbol && (
+              <p className="text-xs text-gray-400 truncate">{companyName}</p>
+            )}
           </div>
           
           {/* Rating Value */}
-          <div className="flex items-start h-7 justify-end">
+          <div className="flex items-start h-7 justify-center">
             {latestRec ? (
-              <span className={getActionBadgeClasses(latestRec.action)}>
-                {latestRec.action}
+              <span className={getActionBadgeClasses(latestRec.action ?? latestRec.newsAction)}>
+                {latestRec.action ?? latestRec.newsAction}
               </span>
             ) : (
               <span className="text-xl font-semibold text-gray-400 leading-7">-</span>
@@ -1005,7 +1008,7 @@ function StockRecommendationTable({
                     Top News
                   </Tooltip>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[140px]">
                   <Tooltip text="Click to view detailed AI-generated explanation of the factors that contributed to this recommendation.">
                     Explanation
                   </Tooltip>
@@ -1014,7 +1017,10 @@ function StockRecommendationTable({
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {recommendations.map((rec, index) => {
-                const confidenceInfo = getConfidenceIndicator(rec.confidence)
+                const newsConfidenceInfo = getConfidenceIndicator(rec.newsConfidence)
+                const technicalConfidenceInfo = getConfidenceIndicator(rec.technicalConfidence)
+                const confidenceInfo = getConfidenceIndicator(rec.confidence ?? null)
+                const overallAction = rec.action ?? rec.newsAction
                 return (
                   <tr 
                     key={rec.id} 
@@ -1031,38 +1037,124 @@ function StockRecommendationTable({
                       )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="w-[84px] flex justify-end">
-                        <span className={getActionBadgeClasses(rec.action)}>
-                          {rec.action}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm">
-                        <div className="font-medium text-gray-900">
-                          {rec.normalizedScore !== null && !isNaN(rec.normalizedScore)
-                            ? `${(rec.normalizedScore * 100).toFixed(1)}%` 
-                            : '-'}
+                      {/* 3-row action view: Overall, News, Tech */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500">Overall</span>
+                          <span className={getActionBadgeClasses(overallAction)}>{overallAction}</span>
                         </div>
-                        <div className="text-xs text-gray-500">
-                          Raw: {formatNumber(rec.score, 3)}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500">News</span>
+                          <span className={getActionBadgeClasses(rec.newsAction)}>{rec.newsAction}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500">Tech</span>
+                          <span className={getActionBadgeClasses(rec.technicalAction)}>{rec.technicalAction}</span>
                         </div>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <div className="w-16 h-2 bg-gray-200 rounded-full mr-2">
-                          <div 
-                            className="h-full bg-blue-600 rounded-full"
-                            style={{ width: `${(rec.confidence || 0) * 100}%` }}
-                          />
+                      {/* 3-row normalized score view aligned to Action/Confidence */}
+                      <div className="space-y-2">
+                        {/* Overall */}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500">Overall</span>
+                          <div className="flex items-center gap-2">
+                            <div className="w-24 h-2 bg-gray-200 rounded-full">
+                              <div
+                                className="h-full bg-blue-600 rounded-full"
+                                style={{ width: `${((rec.normalizedScore ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                            <span className="text-sm font-medium text-gray-700 w-12 text-right">
+                              {formatPercent(rec.normalizedScore ?? null)}
+                            </span>
+                          </div>
                         </div>
-                        <span className={`text-sm font-medium ${confidenceInfo.color}`}>
-                          {formatPercent(rec.confidence)}
-                        </span>
+
+                        {/* News */}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500">News</span>
+                          <div className="flex items-center gap-2">
+                            <div className="w-24 h-2 bg-gray-200 rounded-full">
+                              <div
+                                className="h-full bg-blue-600 rounded-full"
+                                style={{ width: `${((rec.newsNormalizedScore ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                            <span className="text-sm font-medium text-gray-700 w-12 text-right">
+                              {formatPercent(rec.newsNormalizedScore ?? null)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Tech */}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500">Tech</span>
+                          <div className="flex items-center gap-2">
+                            <div className="w-24 h-2 bg-gray-200 rounded-full">
+                              <div
+                                className="h-full bg-blue-600 rounded-full"
+                                style={{ width: `${((rec.technicalNormalizedScore ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                            <span className="text-sm font-medium text-gray-700 w-12 text-right">
+                              {formatPercent(rec.technicalNormalizedScore ?? null)}
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      <div className={`text-xs ${confidenceInfo.color}`}>
-                        {confidenceInfo.label}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      {/* 3-bar confidence view: Overall, News, Tech */}
+                      <div className="space-y-2">
+                        {/* Overall (combined: news + technical + regime) */}
+                        <div>
+                          <div className="flex items-center">
+                            <div className="w-16 h-2 bg-gray-200 rounded-full mr-2">
+                              <div
+                                className="h-full bg-blue-600 rounded-full"
+                                style={{ width: `${((rec.confidence ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                            <span className={`text-sm font-medium ${confidenceInfo.color}`}>
+                              Overall: {formatPercent(rec.confidence ?? null)}
+                            </span>
+                          </div>
+                          <div className={`text-xs ${confidenceInfo.color}`}>{confidenceInfo.label}</div>
+                        </div>
+
+                        {/* News */}
+                        <div>
+                          <div className="flex items-center">
+                            <div className="w-16 h-2 bg-gray-200 rounded-full mr-2">
+                              <div
+                                className="h-full bg-blue-600 rounded-full"
+                                style={{ width: `${((rec.newsConfidence ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                            <span className={`text-sm font-medium ${newsConfidenceInfo.color}`}>
+                              News {formatPercent(rec.newsConfidence ?? null)}
+                            </span>
+                          </div>
+                          <div className={`text-xs ${newsConfidenceInfo.color}`}>{newsConfidenceInfo.label}</div>
+                        </div>
+
+                        {/* Tech */}
+                        <div>
+                          <div className="flex items-center">
+                            <div className="w-16 h-2 bg-gray-200 rounded-full mr-2">
+                              <div
+                                className="h-full bg-blue-600 rounded-full"
+                                style={{ width: `${((rec.technicalConfidence ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                            <span className={`text-sm font-medium ${technicalConfidenceInfo.color}`}>
+                              Tech {formatPercent(rec.technicalConfidence ?? null)}
+                            </span>
+                          </div>
+                          <div className={`text-xs ${technicalConfidenceInfo.color}`}>{technicalConfidenceInfo.label}</div>
+                        </div>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -1089,12 +1181,12 @@ function StockRecommendationTable({
                         View
                       </button>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-6 py-4">
                       <button
                         onClick={() => openExplanation(rec.explanation)}
-                        className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium"
+                        className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium break-words"
                       >
-                        Explanation Link
+                        Explanation
                       </button>
                     </td>
                   </tr>
@@ -1135,7 +1227,10 @@ export default function StockRecommendations() {
   const { user } = useAuth()
   
   // Get target symbol from URL path (/recommendations/AAPL) or hash (#AAPL)
-  const targetSymbol = urlSymbol?.toUpperCase() || location.hash.replace('#', '').toUpperCase() || ''
+  const targetSymbol = (
+    urlSymbol?.toUpperCase() ||
+    (location.hash ? decodeURIComponent(location.hash.replace('#', '')).toUpperCase() : '')
+  )
   
   const [watchlist, setWatchlist] = useState<WatchlistSymbol[]>([])
 
@@ -1243,7 +1338,7 @@ export default function StockRecommendations() {
     const fetchAllRecommendations = async () => {
       for (const { symbol, companyName } of watchlist) {
         try {
-          const response = await recommendationApi.getHistory(symbol, 10)
+          const response = await recommendationApi.getHistory(symbol, 2)
           
           setSymbolData(prev => {
             const newMap = new Map(prev)
@@ -1304,9 +1399,9 @@ export default function StockRecommendations() {
     const targets = symbolsToRefresh.map(s => s.toUpperCase())
     for (const sym of targets) {
       const meta = watchlist.find(w => w.symbol === sym)
-      const companyName = meta?.companyName || sym
+      const companyName = meta?.companyName || ''
       try {
-        const response = await recommendationApi.getHistory(sym, 10)
+        const response = await recommendationApi.getHistory(sym, 2)
         setSymbolData(prev => {
           const newMap = new Map(prev)
           newMap.set(sym, {
@@ -1376,6 +1471,31 @@ export default function StockRecommendations() {
         try {
           const statusResp = await recommendationApi.getGenerationStatus(runId)
           const status = statusResp.data
+
+          if (status.status === 'failed') {
+            clearInterval(pollInterval)
+
+            if (isAll) {
+              setIsGenerating(false)
+              setGenerateMessage(status.errorMessage || 'Recommendation generation failed')
+              setTimeout(() => setGenerateMessage(null), 8000)
+              setCurrentAllRunId(null)
+            } else {
+              setGeneratingSymbols(prev => {
+                const next = new Set(prev)
+                symbolsToRun.forEach(s => next.delete(s))
+                return next
+              })
+              setCurrentSymbolRunIds(prev => {
+                const next = new Map(prev)
+                symbolsToRun.forEach(s => next.delete(s))
+                return next
+              })
+            }
+
+            return
+          }
+
           if (status.status === 'completed') {
             await refreshSymbolsFromDb(symbolsToRun)
 
@@ -1509,11 +1629,11 @@ export default function StockRecommendations() {
       </div>
       
       {/* Main content with sidebar layout */}
-      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-none mx-auto px-3 sm:px-4 lg:px-4 py-8">
         <div className="flex gap-6">
           {/* Left Sidebar - Stock Navigation */}
           {!loading && !error && watchlist.length > 0 && (
-            <aside className="hidden lg:block w-48 flex-shrink-0">
+            <aside className="hidden lg:block w-52 flex-shrink-0">
               <div className="sticky top-[160px] bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
                   <h3 className="text-sm font-semibold text-gray-700">Watchlist</h3>
@@ -1545,16 +1665,19 @@ export default function StockRecommendations() {
                               : 'hover:bg-gray-50 border-l-4 border-l-transparent'
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className={`font-semibold text-sm ${isActive ? 'text-blue-700' : 'text-gray-900'}`}>
-                                <StockSymbolLink
-                                  symbol={symbol}
-                                  className="font-medium text-blue-700 hover:text-blue-900 hover:underline"
-                                />
-                              </span>
+                        {/* Fixed layout: [symbol][star][action] */}
+                        <div className="min-w-0">
+                          <div className="grid grid-cols-[1fr_22px_56px] items-center gap-2">
+                            {/* Symbol */}
+                            <div className="min-w-0">
+                              <StockSymbolLink
+                                symbol={symbol}
+                                className={`block truncate text-sm font-medium ${isActive ? 'text-blue-700' : 'text-blue-700'} hover:text-blue-900 hover:underline`}
+                              />
+                            </div>
 
+                            {/* Star: fixed-width cell */}
+                            <div className="flex justify-center">
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -1582,30 +1705,35 @@ export default function StockRecommendations() {
                                     />
                                   </svg>
                                 )}
-                                </button>
+                              </button>
+                            </div>
 
-                                <div className="w-[52px] flex justify-end">
-                                  {latestRec ? (
-                                    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
-                                      latestRec.action === 'BUY'
-                                        ? 'bg-green-100 text-green-700'
-                                        : latestRec.action === 'SELL'
-                                          ? 'bg-red-100 text-red-700'
-                                          : 'bg-yellow-100 text-yellow-700'
-                                    }`}>
-                                      {latestRec.action}
-                                    </span>
-                                  ) : (
-                                    <span className="text-xs text-gray-300">—</span>
-                                  )}
-                                </div>
-                              </div>
-                            <p className={`text-xs truncate mt-0.5 ${isActive ? 'text-blue-600' : 'text-gray-500'}`}>
-                              {companyName}
-                            </p>
+                            {/* Action badge: fixed-width cell */}
+                            <div className="flex justify-end">
+                              {latestRec ? (
+                                <span
+                                  className={`inline-flex justify-center w-[56px] text-xs px-1.5 py-0.5 rounded font-medium ${
+                                    latestRec.action === 'BUY'
+                                      ? 'bg-green-100 text-green-700'
+                                      : latestRec.action === 'SELL'
+                                        ? 'bg-red-100 text-red-700'
+                                        : 'bg-yellow-100 text-yellow-700'
+                                  }`}
+                                >
+                                  {latestRec.action}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-gray-300">—</span>
+                              )}
+                            </div>
                           </div>
+
+                          <p className={`text-xs truncate mt-0.5 ${isActive ? 'text-blue-600' : 'text-gray-500'}`}>
+                            {companyName}
+                          </p>
                         </div>
                       </div>
+
                     )
                   })}
                 </nav>
@@ -1749,7 +1877,7 @@ export default function StockRecommendations() {
               </div>
               <p className="mt-4 text-xs text-gray-500">
                 Recommendations are generated twice daily (7:30 AM & 12:00 PM PST) using news sentiment analysis 
-                and technical indicators. The system keeps the last 10 recommendations 
+                and technical indicators. The system keeps the last 2 recommendations 
                 for each stock symbol.
               </p>
             </div>

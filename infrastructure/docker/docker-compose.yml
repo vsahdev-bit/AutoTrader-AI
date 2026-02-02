@@ -144,8 +144,13 @@ services:
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=clickhouse_dev_pass
+      - DATABASE_URL=postgresql://autotrader:autotrader_dev_pass@postgres:5432/autotrader
       - NEWS_INTERVAL_MINUTES=30
+      - NEWS_SYMBOLS_SOURCE=watchlist
+      - NEWS_MAX_SYMBOLS=200
     depends_on:
+      postgres:
+        condition: service_healthy
       clickhouse:
         condition: service_healthy
       vault:
@@ -223,7 +228,7 @@ services:
       - VAULT_ADDR=http://vault:8200
       - VAULT_TOKEN=local-dev-token
       - DATA_CONNECTOR_INTERVAL=10800
-      - LLM_CONNECTOR_INTERVAL=21600
+      - LLM_CONNECTOR_INTERVAL=10800
     depends_on:
       postgres:
         condition: service_healthy
