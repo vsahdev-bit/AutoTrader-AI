@@ -285,26 +285,27 @@ export interface SessionInfo {
 export interface StockRecommendationHistory {
   /** Unique recommendation ID (UUID) */
   id: string
-  
+
   /** Stock ticker symbol (e.g., 'AAPL', 'GOOGL') */
   symbol: string
-  
-  /** 
-   * AI's recommended action:
-   * - BUY: normalized score > 0.8
-   * - SELL: normalized score < 0.5
-   * - HOLD: 0.5 <= normalized score <= 0.8
-   */
-  action: 'BUY' | 'SELL' | 'HOLD'
-  
-  /** Raw score from -1 (strong sell) to 1 (strong buy) */
+
+  // --- Legacy combined (kept for backward compatibility) ---
+  action?: 'BUY' | 'SELL' | 'HOLD'
+  normalizedScore?: number | null
+  confidence?: number | null
+
+  // --- News track ---
+  newsAction: 'BUY' | 'SELL' | 'HOLD'
+  newsNormalizedScore: number | null
+  newsConfidence: number | null
+
+  // --- Technical track ---
+  technicalAction: 'BUY' | 'SELL' | 'HOLD'
+  technicalNormalizedScore: number | null
+  technicalConfidence: number | null
+
+  /** Raw score (legacy/debug only) */
   score: number | null
-  
-  /** Normalized score from 0 to 1 for display */
-  normalizedScore: number | null
-  
-  /** Model's confidence in the recommendation (0.0 to 1.0) */
-  confidence: number | null
   
   /** Stock price when recommendation was generated */
   priceAtRecommendation: number | null

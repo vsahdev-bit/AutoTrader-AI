@@ -1,4 +1,5 @@
 import React from 'react'
+import { Link } from 'react-router-dom'
 
 /**
  * StockSymbolLink
@@ -17,16 +18,16 @@ export default function StockSymbolLink({
   /** Optional override for the link target */
   href?: string
 }) {
-  const sym = (symbol || '').toUpperCase()
+  const sym = (symbol || '').trim().toUpperCase()
   const target = href ?? `/recommendations#${encodeURIComponent(sym)}`
 
   return (
-    <a
-      href={target}
+    <Link
+      to={target}
       className={className ?? 'text-blue-600 hover:text-blue-800 hover:underline'}
       title={`View ${sym}`}
     >
       {sym}
-    </a>
+    </Link>
   )
 }

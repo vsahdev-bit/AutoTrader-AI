@@ -65,6 +65,8 @@ import os
 from datetime import datetime, date, timezone
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
+
+import math
 from typing import List, Dict, Optional, Any
 import uvicorn
 import asyncpg
@@ -98,6 +100,103 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _finite_float(v) -> float | None:
+    """Return a finite float or None.
+
+    FastAPI/Starlette will raise `ValueError: Out of range float values are not JSON compliant`
+    if any response contains NaN/Inf. This helper is used to guarantee JSON-safe outputs.
+    """
+    if v is None:
+        return None
+    try:
+        n = float(v)
+    except Exception:
+        return None
+    return n if math.isfinite(n) else None
+
+
+def _finite_float_or(
+    v,
+    default: float,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    """Return finite float, else a safe default; optionally clamp."""
+    n = _finite_float(v)
+    if n is None:
+        n = float(default)
+    if min_value is not None:
+        n = max(min_value, n)
+    if max_value is not None:
+        n = min(max_value, n)
+    return n
+
+
+def _safe_round(
+    v,
+    ndigits: int,
+    *,
+    default: float | None = None,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    """Round only if value is finite, else return default (or None)."""
+    if default is not None:
+        n = _finite_float_or(v, default, min_value=min_value, max_value=max_value)
+        return round(n, ndigits)
+    n = _finite_float(v)
+    if n is None:
+        return None
+    if min_value is not None:
+        n = max(min_value, n)
+    if max_value is not None:
+        n = min(max_value, n)
+    return round(n, ndigits)
+
+
+def _json_sanitize(value: Any) -> Any:
+    """Recursively convert NaN/Inf floats to None for JSON safety."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (int, str, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {k: _json_sanitize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_sanitize(v) for v in value]
+    # Fallback: try to coerce to float, otherwise string-repr
+    n = _finite_float(value)
+    if n is not None:
+        return n
+    return str(value)
+
+
+def _db_float(v, *, min_value: float | None = None, max_value: float | None = None):
+    """Prepare numeric values for Postgres.
+
+    - Converts to float when possible
+    - Replaces NaN/Inf with None (prevents numeric NaN leaking into DB)
+    - Optionally clamps to [min_value, max_value]
+
+    asyncpg will happily accept float('nan') and Postgres numeric can store NaN,
+    which later becomes null in JSON responses. We avoid writing those.
+    """
+    if v is None:
+        return None
+    try:
+        n = float(v)
+    except Exception:
+        return None
+    if not math.isfinite(n):
+        return None
+    if min_value is not None:
+        n = max(min_value, n)
+    if max_value is not None:
+        n = min(max_value, n)
+    return n
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -187,25 +286,48 @@ class SignalExplanation(BaseModel):
 
 
 class Recommendation(BaseModel):
-    """A single stock recommendation."""
+    """A single stock recommendation.
+
+    This model preserves the legacy *combined* fields (action/score/normalized_score/confidence)
+    while also exposing the newer split tracks (news_* and technical_*).
+    """
+
     symbol: str = Field(..., description="Stock ticker symbol")
-    action: str = Field(..., description="Recommended action: BUY, SELL, or HOLD")
-    score: Optional[float] = Field(None, description="Raw combined score (-1 to 1)")
-    normalized_score: Optional[float] = Field(None, ge=0, le=1, description="Normalized score (0-1)")
-    confidence: float = Field(..., ge=0, le=1, description="Model confidence (0-1)")
+
+    # --- Legacy combined fields (overall recommendation) ---
+    action: str = Field(..., description="Overall action: BUY, SELL, or HOLD")
+    score: float = Field(..., ge=-1, le=1, description="Overall raw score (-1 to 1)")
+    normalized_score: float = Field(..., ge=0, le=1, description="Overall normalized score (0-1)")
+    confidence: float = Field(..., ge=0, le=1, description="Overall confidence (0-1)")
+
+    # --- News track (sentiment) ---
+    news_action: str = Field(..., description="News-derived action: BUY, SELL, or HOLD")
+    news_normalized_score: float = Field(..., ge=0, le=1, description="News normalized score (0-1)")
+    news_confidence: float = Field(..., ge=0, le=1, description="News confidence (0-1)")
+
+    # --- Technical track ---
+    technical_action: str = Field(..., description="Technical-derived action: BUY, SELL, or HOLD")
+    technical_normalized_score: float = Field(..., ge=0, le=1, description="Technical normalized score (0-1)")
+    technical_confidence: float = Field(..., ge=0, le=1, description="Technical confidence (0-1)")
+
+    # Raw component scores (still useful for explainability)
     price_at_recommendation: Optional[float] = Field(None, description="Stock price at recommendation time")
     news_sentiment_score: Optional[float] = Field(None, description="News sentiment component score (-1 to 1)")
     news_momentum_score: Optional[float] = Field(None, description="News momentum component score (-1 to 1)")
     technical_trend_score: Optional[float] = Field(None, description="Technical trend component score (-1 to 1)")
     technical_momentum_score: Optional[float] = Field(None, description="Technical momentum component score (-1 to 1)")
+
+    # Key indicators displayed in UI
     rsi: Optional[float] = Field(None, description="RSI indicator value (0-1)")
     macd_histogram: Optional[float] = Field(None, description="MACD histogram value (normalized)")
     price_vs_sma20: Optional[float] = Field(None, description="Price vs 20-day SMA ratio")
     news_sentiment_1d: Optional[float] = Field(None, description="1-day news sentiment score")
     article_count_24h: Optional[int] = Field(None, description="Number of articles in last 24 hours")
+
     explanation: Dict[str, Any] = Field(..., description="Human-readable explanation")
     signals: Optional[SignalExplanation] = Field(None, description="Signal breakdown")
-    # Regime information (NEW)
+
+    # Regime information
     regime: Optional[RegimeInfo] = Field(None, description="Current market regime classification")
     signal_weights: Optional[SignalWeightsInfo] = Field(None, description="Signal weights applied for regime")
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -232,10 +354,14 @@ class RecommendationHistoryItem(BaseModel):
     """A single recommendation history item from the database."""
     id: str = Field(..., description="Unique recommendation ID")
     symbol: str = Field(..., description="Stock ticker symbol")
-    action: str = Field(..., description="Recommended action: BUY, SELL, or HOLD")
-    score: Optional[float] = Field(None, description="Raw score from -1 to 1")
-    normalized_score: Optional[float] = Field(None, description="Normalized score from 0 to 1")
-    confidence: Optional[float] = Field(None, description="Model confidence (0-1)")
+
+    news_action: Optional[str] = Field(None, description="News-derived action")
+    news_normalized_score: Optional[float] = Field(None, description="News normalized score (0-1)")
+    news_confidence: Optional[float] = Field(None, description="News confidence (0-1)")
+
+    technical_action: Optional[str] = Field(None, description="Technical-derived action")
+    technical_normalized_score: Optional[float] = Field(None, description="Technical normalized score (0-1)")
+    technical_confidence: Optional[float] = Field(None, description="Technical confidence (0-1)")
     price_at_recommendation: Optional[float] = Field(None, description="Stock price at recommendation time")
     news_sentiment_score: Optional[float] = Field(None, description="News sentiment component score")
     news_momentum_score: Optional[float] = Field(None, description="News momentum component score")
@@ -594,18 +720,37 @@ class RecommendationEngine:
                 regime_state = None
                 regime_weights = None
         
-        # Determine signal weights (regime-adaptive or default)
+        # Determine weights.
+        # We support:
+        #  - split-track scoring (weights normalized within each track)
+        #  - legacy combined scoring (original cross-signal weights)
         if regime_weights:
-            weight_news_sentiment = regime_weights.news_sentiment
-            weight_news_momentum = regime_weights.news_momentum
-            weight_technical_trend = regime_weights.technical_trend
-            weight_technical_momentum = regime_weights.technical_momentum
+            ns = max(0.0, float(regime_weights.news_sentiment))
+            nm = max(0.0, float(regime_weights.news_momentum))
+            tt = max(0.0, float(regime_weights.technical_trend))
+            tm = max(0.0, float(regime_weights.technical_momentum))
         else:
-            weight_news_sentiment = self.DEFAULT_WEIGHT_NEWS_SENTIMENT
-            weight_news_momentum = self.DEFAULT_WEIGHT_NEWS_MOMENTUM
-            weight_technical_trend = self.DEFAULT_WEIGHT_TECHNICAL_TREND
-            weight_technical_momentum = self.DEFAULT_WEIGHT_TECHNICAL_MOMENTUM
-        
+            # Defaults are cross-signal weights (sum to 1)
+            ns = self.DEFAULT_WEIGHT_NEWS_SENTIMENT
+            nm = self.DEFAULT_WEIGHT_NEWS_MOMENTUM
+            tt = self.DEFAULT_WEIGHT_TECHNICAL_TREND
+            tm = self.DEFAULT_WEIGHT_TECHNICAL_MOMENTUM
+
+        # --- Split-track weights (normalized within each track) ---
+        news_sum = (ns + nm) if (ns + nm) > 0 else 1.0
+        tech_sum = (tt + tm) if (tt + tm) > 0 else 1.0
+        weight_news_sentiment = ns / news_sum
+        weight_news_momentum = nm / news_sum
+        weight_technical_trend = tt / tech_sum
+        weight_technical_momentum = tm / tech_sum
+
+        # --- Legacy combined weights (cross-signal; sum to 1) ---
+        total_weight = (ns + nm + tt + tm) if (ns + nm + tt + tm) > 0 else 1.0
+        weight_combined_news_sentiment = ns / total_weight
+        weight_combined_news_momentum = nm / total_weight
+        weight_combined_technical_trend = tt / total_weight
+        weight_combined_technical_momentum = tm / total_weight
+
         # Calculate scores from each signal type
         news_sentiment_score = self._calculate_news_sentiment_score(news_features)
         news_momentum_score = self._calculate_news_momentum_score(news_features)
@@ -614,35 +759,94 @@ class RecommendationEngine:
         
         # Combine scores with REGIME-ADAPTIVE weights
         # Handle NaN values by treating them as 0 (neutral)
-        safe_news_sentiment = 0.0 if math.isnan(news_sentiment_score) else news_sentiment_score
-        safe_news_momentum = 0.0 if math.isnan(news_momentum_score) else news_momentum_score
-        safe_technical_trend = 0.0 if math.isnan(technical_trend_score) else technical_trend_score
-        safe_technical_momentum = 0.0 if math.isnan(technical_momentum_score) else technical_momentum_score
+        safe_news_sentiment = 0.0 if (news_sentiment_score is None or math.isnan(news_sentiment_score)) else news_sentiment_score
+        safe_news_momentum = 0.0 if (news_momentum_score is None or math.isnan(news_momentum_score)) else news_momentum_score
+        safe_technical_trend = 0.0 if (technical_trend_score is None or math.isnan(technical_trend_score)) else technical_trend_score
+        safe_technical_momentum = 0.0 if (technical_momentum_score is None or math.isnan(technical_momentum_score)) else technical_momentum_score
+
+        # Use the safe versions going forward to avoid NaN leaking into responses/DB.
+        news_sentiment_score = safe_news_sentiment
+        news_momentum_score = safe_news_momentum
+        technical_trend_score = safe_technical_trend
+        technical_momentum_score = safe_technical_momentum
         
-        combined_score = (
+        # Compute per-track raw scores (each is -1..+1)
+        news_raw_score = (
             safe_news_sentiment * weight_news_sentiment +
-            safe_news_momentum * weight_news_momentum +
+            safe_news_momentum * weight_news_momentum
+        )
+        technical_raw_score = (
             safe_technical_trend * weight_technical_trend +
             safe_technical_momentum * weight_technical_momentum
         )
-        
-        # Get regime-adjusted thresholds
-        buy_threshold, sell_threshold = self.get_regime_adjusted_thresholds(regime_state)
-        
-        # Determine action using regime-adjusted thresholds
-        if combined_score > buy_threshold:
+
+        # Compute legacy combined raw score (cross-signal weights; -1..+1)
+        combined_score = (
+            safe_news_sentiment * weight_combined_news_sentiment +
+            safe_news_momentum * weight_combined_news_momentum +
+            safe_technical_trend * weight_combined_technical_trend +
+            safe_technical_momentum * weight_combined_technical_momentum
+        )
+        combined_score = max(-1.0, min(1.0, combined_score))
+
+        # Track-specific thresholds (systematic regime integration)
+        news_buy_threshold, news_sell_threshold = self.get_regime_adjusted_thresholds(regime_state)
+        tech_buy_threshold, tech_sell_threshold = self.get_regime_adjusted_thresholds(regime_state)
+
+        # Determine track actions
+        if news_raw_score > news_buy_threshold:
+            news_action = "BUY"
+        elif news_raw_score < news_sell_threshold:
+            news_action = "SELL"
+        else:
+            news_action = "HOLD"
+
+        if technical_raw_score > tech_buy_threshold:
+            technical_action = "BUY"
+        elif technical_raw_score < tech_sell_threshold:
+            technical_action = "SELL"
+        else:
+            technical_action = "HOLD"
+
+        # Determine legacy combined action based on combined score
+        combined_buy_threshold, combined_sell_threshold = self.get_regime_adjusted_thresholds(regime_state)
+        if combined_score > combined_buy_threshold:
             action = "BUY"
-        elif combined_score < sell_threshold:
+        elif combined_score < combined_sell_threshold:
             action = "SELL"
         else:
             action = "HOLD"
         
         # Log threshold adjustments for debugging
         if regime_state:
-            logger.debug(f"Regime thresholds for {symbol}: buy={buy_threshold:.2f}, sell={sell_threshold:.2f} "
-                        f"(default: buy={self.DEFAULT_BUY_THRESHOLD}, sell={self.DEFAULT_SELL_THRESHOLD})")
+            logger.debug(
+                f"Regime thresholds for {symbol}: "
+                f"news_buy={news_buy_threshold:.2f}, news_sell={news_sell_threshold:.2f}; "
+                f"tech_buy={tech_buy_threshold:.2f}, tech_sell={tech_sell_threshold:.2f} "
+                f"(default: buy={self.DEFAULT_BUY_THRESHOLD}, sell={self.DEFAULT_SELL_THRESHOLD})"
+            )
         
-        # Calculate base confidence (based on signal agreement and strength)
+        # Calculate per-track confidences
+        news_confidence = self._calculate_confidence(
+            news_sentiment_score=news_sentiment_score,
+            news_momentum_score=news_momentum_score,
+            technical_trend_score=0.0,
+            technical_momentum_score=0.0,
+            combined_score=news_raw_score,
+            news_features=news_features,
+            technical_features=None,
+        )
+        technical_confidence = self._calculate_confidence(
+            news_sentiment_score=0.0,
+            news_momentum_score=0.0,
+            technical_trend_score=technical_trend_score,
+            technical_momentum_score=technical_momentum_score,
+            combined_score=technical_raw_score,
+            news_features=None,
+            technical_features=technical_features,
+        )
+
+        # Legacy combined confidence (uses both news + technical components)
         confidence = self._calculate_confidence(
             news_sentiment_score=news_sentiment_score,
             news_momentum_score=news_momentum_score,
@@ -652,11 +856,12 @@ class RecommendationEngine:
             news_features=news_features,
             technical_features=technical_features,
         )
-        
+
         # Apply regime confidence multiplier
         if regime_weights:
-            confidence = confidence * regime_weights.confidence_multiplier
-            confidence = max(0.0, min(1.0, confidence))
+            news_confidence = max(0.0, min(1.0, news_confidence * regime_weights.confidence_multiplier))
+            technical_confidence = max(0.0, min(1.0, technical_confidence * regime_weights.confidence_multiplier))
+            confidence = max(0.0, min(1.0, confidence * regime_weights.confidence_multiplier))
         
         # Fetch news articles from ClickHouse for LLM context
         news_articles = []
@@ -671,9 +876,9 @@ class RecommendationEngine:
         try:
             llm_analysis = await self._generate_llm_explanation(
                 symbol=symbol,
-                action=action,
-                combined_score=combined_score,
-                confidence=confidence,
+                action=news_action if news_action != 'HOLD' else technical_action,
+                combined_score=news_raw_score,
+                confidence=news_confidence,
                 news_articles=news_articles,
                 news_features=news_features,
                 technical_features=technical_features,
@@ -684,14 +889,20 @@ class RecommendationEngine:
         # Generate explanation (include regime context)
         explanation = self._generate_explanation(
             symbol=symbol,
-            action=action,
-            combined_score=combined_score,
+            action=news_action if news_action != 'HOLD' else technical_action,
+            combined_score=news_raw_score,
             news_features=news_features,
             technical_features=technical_features,
             llm_analysis=llm_analysis,
             news_articles=news_articles,
             regime_explanation=regime_explanation,
         )
+        explanation["news_action"] = news_action
+        explanation["technical_action"] = technical_action
+        explanation["news_score_normalized"] = round((news_raw_score + 1) / 2, 4)
+        explanation["technical_score_normalized"] = round((technical_raw_score + 1) / 2, 4)
+        explanation["news_confidence"] = round(news_confidence, 3)
+        explanation["technical_confidence"] = round(technical_confidence, 3)
         
         # Build signals breakdown
         signals = None
@@ -708,10 +919,12 @@ class RecommendationEngine:
         news_sentiment_1d = news_features.sentiment_1d if news_features else None
         article_count_24h = news_features.article_count_1d if news_features else 0
         
-        # Normalize score to 0-1 range
+        # Normalize scores to 0-1 range
+        news_normalized_score = (news_raw_score + 1) / 2
+        technical_normalized_score = (technical_raw_score + 1) / 2
         normalized_score = (combined_score + 1) / 2
         
-        # Build regime info for response
+        # Build regime info for response (ensure floats are JSON-safe)
         regime_info = None
         if regime_state and regime_explanation:
             regime_info = RegimeInfo(
@@ -721,13 +934,13 @@ class RecommendationEngine:
                 trend=regime_state.trend.value,
                 liquidity=regime_state.liquidity.value,
                 information=regime_state.information.value,
-                risk_score=regime_state.regime_risk_score,
-                regime_confidence=regime_state.regime_confidence,
+                risk_score=_finite_float_or(regime_state.regime_risk_score, 0.0, min_value=0.0, max_value=1.0),
+                regime_confidence=_finite_float_or(regime_state.regime_confidence, 0.0, min_value=0.0, max_value=1.0),
                 warnings=regime_explanation.get("warnings", []),
                 explanations=regime_explanation.get("explanations", []),
             )
-        
-        # Build signal weights info for response
+
+        # Build signal weights info for response (ensure floats are JSON-safe)
         signal_weights_info = None
         if regime_weights:
             # Build position sizing info
@@ -735,55 +948,64 @@ class RecommendationEngine:
             if regime_weights.position_sizing:
                 ps = regime_weights.position_sizing
                 position_sizing_info = PositionSizingInfo(
-                    size_multiplier=round(ps.size_multiplier, 3),
-                    max_position_percent=round(ps.max_position_percent, 2),
+                    size_multiplier=_safe_round(ps.size_multiplier, 3, default=1.0, min_value=0.1, max_value=1.5),
+                    max_position_percent=_safe_round(ps.max_position_percent, 2, default=5.0, min_value=0.0),
                     scale_in_entries=ps.scale_in_entries,
                     scale_in_interval_hours=ps.scale_in_interval_hours,
-                    risk_per_trade_percent=round(ps.risk_per_trade_percent, 3),
+                    risk_per_trade_percent=_safe_round(ps.risk_per_trade_percent, 3, default=1.0, min_value=0.0),
                     reasoning=ps.reasoning,
                 )
-            
+
             # Build stop-loss info
             stop_loss_info = None
             if regime_weights.stop_loss:
                 sl = regime_weights.stop_loss
                 stop_loss_info = StopLossInfo(
-                    atr_multiplier=round(sl.atr_multiplier, 2),
-                    percent_from_entry=round(sl.percent_from_entry, 2),
+                    atr_multiplier=_safe_round(sl.atr_multiplier, 2, default=2.0, min_value=0.0),
+                    percent_from_entry=_safe_round(sl.percent_from_entry, 2, default=5.0, min_value=0.0),
                     use_trailing_stop=sl.use_trailing_stop,
-                    trailing_activation_percent=round(sl.trailing_activation_percent, 2),
-                    take_profit_atr_multiplier=round(sl.take_profit_atr_multiplier, 2),
-                    risk_reward_ratio=round(sl.risk_reward_ratio, 2),
+                    trailing_activation_percent=_safe_round(sl.trailing_activation_percent, 2, default=0.0, min_value=0.0),
+                    take_profit_atr_multiplier=_safe_round(sl.take_profit_atr_multiplier, 2, default=2.0, min_value=0.0),
+                    risk_reward_ratio=_safe_round(sl.risk_reward_ratio, 2, default=2.0, min_value=0.0),
                     time_stop_days=sl.time_stop_days,
                     reasoning=sl.reasoning,
                 )
-            
+
             signal_weights_info = SignalWeightsInfo(
-                news_sentiment=round(regime_weights.news_sentiment, 4),
-                news_momentum=round(regime_weights.news_momentum, 4),
-                technical_trend=round(regime_weights.technical_trend, 4),
-                technical_momentum=round(regime_weights.technical_momentum, 4),
-                confidence_multiplier=round(regime_weights.confidence_multiplier, 3),
-                trade_frequency_modifier=round(regime_weights.trade_frequency_modifier, 3),
+                news_sentiment=_safe_round(regime_weights.news_sentiment, 4, default=0.3, min_value=0.0),
+                news_momentum=_safe_round(regime_weights.news_momentum, 4, default=0.2, min_value=0.0),
+                technical_trend=_safe_round(regime_weights.technical_trend, 4, default=0.25, min_value=0.0),
+                technical_momentum=_safe_round(regime_weights.technical_momentum, 4, default=0.25, min_value=0.0),
+                confidence_multiplier=_safe_round(regime_weights.confidence_multiplier, 3, default=1.0, min_value=0.0),
+                trade_frequency_modifier=_safe_round(regime_weights.trade_frequency_modifier, 3, default=1.0, min_value=0.0),
                 position_sizing=position_sizing_info,
                 stop_loss=stop_loss_info,
             )
         
+        # Final JSON-safety scrub (prevents Starlette serialization errors for NaN/Inf)
+        explanation = _json_sanitize(explanation)
+
         return Recommendation(
             symbol=symbol,
             action=action,
-            score=round(combined_score, 4),
-            normalized_score=round(normalized_score, 4),
-            confidence=round(confidence, 3),
-            price_at_recommendation=current_price,
-            news_sentiment_score=round(news_sentiment_score, 4),
-            news_momentum_score=round(news_momentum_score, 4),
-            technical_trend_score=round(technical_trend_score, 4),
-            technical_momentum_score=round(technical_momentum_score, 4),
-            rsi=round(rsi, 4) if rsi is not None else None,
-            macd_histogram=round(macd_histogram, 6) if macd_histogram is not None else None,
-            price_vs_sma20=round(price_vs_sma20, 4) if price_vs_sma20 is not None else None,
-            news_sentiment_1d=round(news_sentiment_1d, 4) if news_sentiment_1d is not None else None,
+            score=_safe_round(combined_score, 4, default=0.0, min_value=-1.0, max_value=1.0),
+            normalized_score=_safe_round(normalized_score, 4, default=0.5, min_value=0.0, max_value=1.0),
+            confidence=_safe_round(confidence, 3, default=0.0, min_value=0.0, max_value=1.0),
+            news_action=news_action,
+            news_normalized_score=_safe_round(news_normalized_score, 4, default=0.5, min_value=0.0, max_value=1.0),
+            news_confidence=_safe_round(news_confidence, 3, default=0.0, min_value=0.0, max_value=1.0),
+            technical_action=technical_action,
+            technical_normalized_score=_safe_round(technical_normalized_score, 4, default=0.5, min_value=0.0, max_value=1.0),
+            technical_confidence=_safe_round(technical_confidence, 3, default=0.0, min_value=0.0, max_value=1.0),
+            price_at_recommendation=_finite_float(current_price),
+            news_sentiment_score=_safe_round(news_sentiment_score, 4, default=0.0, min_value=-1.0, max_value=1.0),
+            news_momentum_score=_safe_round(news_momentum_score, 4, default=0.0, min_value=-1.0, max_value=1.0),
+            technical_trend_score=_safe_round(technical_trend_score, 4, default=0.0, min_value=-1.0, max_value=1.0),
+            technical_momentum_score=_safe_round(technical_momentum_score, 4, default=0.0, min_value=-1.0, max_value=1.0),
+            rsi=_safe_round(rsi, 4, default=None, min_value=0.0, max_value=1.0),
+            macd_histogram=_safe_round(macd_histogram, 6, default=None),
+            price_vs_sma20=_safe_round(price_vs_sma20, 4, default=None),
+            news_sentiment_1d=_safe_round(news_sentiment_1d, 4, default=None, min_value=-1.0, max_value=1.0),
             article_count_24h=article_count_24h,
             explanation=explanation,
             signals=signals,
@@ -1540,19 +1762,43 @@ async def generate_single_recommendation(request: SingleRecommendationRequest):
                 try:
                     await pool.execute("""
                         INSERT INTO stock_recommendations (
-                            symbol, action, score, normalized_score, confidence,
-                            price_at_recommendation, news_sentiment_score, news_momentum_score,
+                            symbol,
+                            -- legacy combined
+                            action, score, normalized_score, confidence,
+                            -- split tracks
+                            news_action, news_normalized_score, news_confidence,
+                            technical_action, technical_normalized_score, technical_confidence,
+                            -- features
+                            price_at_recommendation,
+                            news_sentiment_score, news_momentum_score,
                             technical_trend_score, technical_momentum_score,
                             rsi, macd_histogram, price_vs_sma20,
                             news_sentiment_1d, article_count_24h,
                             explanation, data_sources_used, generated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+                        ) VALUES (
+                            $1,
+                            $2, $3, $4, $5,
+                            $6, $7, $8,
+                            $9, $10, $11,
+                            $12,
+                            $13, $14,
+                            $15, $16,
+                            $17, $18, $19,
+                            $20, $21,
+                            $22, $23, NOW()
+                        )
                     """,
                         symbol,
                         recommendation.action,
-                        recommendation.score,
-                        recommendation.normalized_score,
-                        recommendation.confidence,
+                        _db_float(recommendation.score, min_value=-1.0, max_value=1.0),
+                        _db_float(recommendation.normalized_score, min_value=0.0, max_value=1.0),
+                        _db_float(recommendation.confidence, min_value=0.0, max_value=1.0),
+                        recommendation.news_action,
+                        _db_float(recommendation.news_normalized_score, min_value=0.0, max_value=1.0),
+                        _db_float(recommendation.news_confidence, min_value=0.0, max_value=1.0),
+                        recommendation.technical_action,
+                        _db_float(recommendation.technical_normalized_score, min_value=0.0, max_value=1.0),
+                        _db_float(recommendation.technical_confidence, min_value=0.0, max_value=1.0),
                         recommendation.price_at_recommendation,
                         recommendation.news_sentiment_score,
                         recommendation.news_momentum_score,
@@ -1574,10 +1820,22 @@ async def generate_single_recommendation(request: SingleRecommendationRequest):
         return {
             "symbol": recommendation.symbol,
             "company_name": request.company_name or symbol,
+
+            # Legacy combined (for backward compatibility + older UIs)
             "action": recommendation.action,
             "confidence": recommendation.confidence,
             "normalized_score": recommendation.normalized_score,
             "score": recommendation.score,
+
+            # Split tracks
+            "news_action": recommendation.news_action,
+            "news_confidence": recommendation.news_confidence,
+            "news_normalized_score": recommendation.news_normalized_score,
+            "technical_action": recommendation.technical_action,
+            "technical_confidence": recommendation.technical_confidence,
+            "technical_normalized_score": recommendation.technical_normalized_score,
+
+            # Components
             "news_sentiment_score": recommendation.news_sentiment_score,
             "news_momentum_score": recommendation.news_momentum_score,
             "technical_trend_score": recommendation.technical_trend_score,
@@ -1594,6 +1852,63 @@ async def generate_single_recommendation(request: SingleRecommendationRequest):
     except Exception as e:
         logger.error(f"Error generating recommendation for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _normalize_symbol(sym: str) -> str:
+    """Normalize/sanitize a ticker symbol.
+
+    We have observed corrupted watchlist symbols containing whitespace/newlines
+    (e.g. "T\nDOC"), which can break downstream providers and/or DB writes.
+
+    Strategy:
+    - uppercase
+    - trim
+    - remove all whitespace characters
+    """
+    if sym is None:
+        return ""
+    # Remove *all* whitespace (spaces, tabs, newlines) and uppercase.
+    return "".join(str(sym).split()).upper()
+
+
+def _neutral_recommendation(symbol: str, *, error: str | None = None) -> "Recommendation":
+    """Return a valid, minimal HOLD recommendation.
+
+    Important: `Recommendation` has many required fields; this helper ensures
+    our fallback cannot raise validation errors (which would otherwise bubble
+    up as a 500 and fail the whole batch).
+    """
+    explanation: Dict[str, Any] = {"summary": f"Unable to analyze {symbol}"}
+    if error:
+        explanation["error"] = error
+
+    return Recommendation(
+        symbol=symbol,
+        action="HOLD",
+        score=0.0,
+        normalized_score=0.5,
+        confidence=0.0,
+        news_action="HOLD",
+        news_normalized_score=0.5,
+        news_confidence=0.0,
+        technical_action="HOLD",
+        technical_normalized_score=0.5,
+        technical_confidence=0.0,
+        price_at_recommendation=None,
+        news_sentiment_score=0.0,
+        news_momentum_score=0.0,
+        technical_trend_score=0.0,
+        technical_momentum_score=0.0,
+        rsi=None,
+        macd_histogram=None,
+        price_vs_sma20=None,
+        news_sentiment_1d=None,
+        article_count_24h=0,
+        explanation=explanation,
+        signals=None,
+        regime=None,
+        signal_weights=None,
+    )
 
 
 @app.post("/recommendations", response_model=RecommendationResponse)
@@ -1613,14 +1928,25 @@ async def generate_recommendations(request: RecommendationRequest):
     logger.info(f"Generating recommendations for user {request.user_id}, symbols: {request.symbols}")
     
     engine = await get_engine()
+
+    # Normalize/sanitize symbols early so downstream providers don't see bad values.
+    normalized_symbols = [_normalize_symbol(s) for s in (request.symbols or [])]
+    normalized_symbols = [s for s in normalized_symbols if s]
     
     recommendations: List[Recommendation] = []
     
     # Optional DB persistence (used by scheduled runs and on-demand batch generation)
     db_pool = await get_db_pool() if request.save_to_db else None
 
-    for symbol in request.symbols:
-        sym = symbol.upper().strip()
+    # Iterate sanitized symbols (and de-dupe while preserving order)
+    seen: set[str] = set()
+    symbols_to_process: List[str] = []
+    for s in normalized_symbols:
+        if s not in seen:
+            seen.add(s)
+            symbols_to_process.append(s)
+
+    for sym in symbols_to_process:
         try:
             rec = await engine.generate_recommendation(
                 symbol=sym,
@@ -1633,19 +1959,41 @@ async def generate_recommendations(request: RecommendationRequest):
                     await db_pool.execute(
                         """
                         INSERT INTO stock_recommendations (
-                            symbol, action, score, normalized_score, confidence,
+                            symbol,
+                            -- legacy combined
+                            action, score, normalized_score, confidence,
+                            -- split tracks
+                            news_action, news_normalized_score, news_confidence,
+                            technical_action, technical_normalized_score, technical_confidence,
+                            -- features
                             price_at_recommendation, news_sentiment_score, news_momentum_score,
                             technical_trend_score, technical_momentum_score,
                             rsi, macd_histogram, price_vs_sma20,
                             news_sentiment_1d, article_count_24h,
                             explanation, data_sources_used, generated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+                        ) VALUES (
+                            $1,
+                            $2, $3, $4, $5,
+                            $6, $7, $8,
+                            $9, $10, $11,
+                            $12, $13, $14,
+                            $15, $16,
+                            $17, $18, $19,
+                            $20, $21,
+                            $22, $23, NOW()
+                        )
                         """,
                         rec.symbol,
                         rec.action,
-                        rec.score,
-                        rec.normalized_score,
-                        rec.confidence,
+                        _db_float(rec.score, min_value=-1.0, max_value=1.0),
+                        _db_float(rec.normalized_score, min_value=0.0, max_value=1.0),
+                        _db_float(rec.confidence, min_value=0.0, max_value=1.0),
+                        rec.news_action,
+                        _db_float(rec.news_normalized_score, min_value=0.0, max_value=1.0),
+                        _db_float(rec.news_confidence, min_value=0.0, max_value=1.0),
+                        rec.technical_action,
+                        _db_float(rec.technical_normalized_score, min_value=0.0, max_value=1.0),
+                        _db_float(rec.technical_confidence, min_value=0.0, max_value=1.0),
                         rec.price_at_recommendation,
                         rec.news_sentiment_score,
                         rec.news_momentum_score,
@@ -1666,13 +2014,7 @@ async def generate_recommendations(request: RecommendationRequest):
             recommendations.append(rec)
         except Exception as e:
             logger.error(f"Failed to generate recommendation for {sym}: {e}")
-            # Return neutral recommendation on error
-            recommendations.append(Recommendation(
-                symbol=sym,
-                action="HOLD",
-                confidence=0.0,
-                explanation={"summary": f"Unable to analyze {sym}", "error": str(e)},
-            ))
+            recommendations.append(_neutral_recommendation(sym, error=str(e)))
     
     return RecommendationResponse(
         user_id=request.user_id,
@@ -1733,7 +2075,9 @@ async def get_recommendation_history(
     try:
         query = """
             SELECT 
-                id, symbol, action, score, normalized_score, confidence,
+                id, symbol,
+                news_action, news_normalized_score, news_confidence,
+                technical_action, technical_normalized_score, technical_confidence,
                 price_at_recommendation,
                 news_sentiment_score, news_momentum_score,
                 technical_trend_score, technical_momentum_score,
@@ -1754,10 +2098,12 @@ async def get_recommendation_history(
             recommendations.append(RecommendationHistoryItem(
                 id=str(row['id']),
                 symbol=row['symbol'],
-                action=row['action'],
-                score=float(row['score']) if row['score'] is not None else None,
-                normalized_score=float(row['normalized_score']) if row['normalized_score'] is not None else None,
-                confidence=float(row['confidence']) if row['confidence'] is not None else None,
+                news_action=row['news_action'],
+                news_normalized_score=float(row['news_normalized_score']) if row['news_normalized_score'] is not None else None,
+                news_confidence=float(row['news_confidence']) if row['news_confidence'] is not None else None,
+                technical_action=row['technical_action'],
+                technical_normalized_score=float(row['technical_normalized_score']) if row['technical_normalized_score'] is not None else None,
+                technical_confidence=float(row['technical_confidence']) if row['technical_confidence'] is not None else None,
                 price_at_recommendation=float(row['price_at_recommendation']) if row['price_at_recommendation'] is not None else None,
                 news_sentiment_score=float(row['news_sentiment_score']) if row['news_sentiment_score'] is not None else None,
                 news_momentum_score=float(row['news_momentum_score']) if row['news_momentum_score'] is not None else None,

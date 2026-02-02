@@ -49,6 +49,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _load_env_file_if_present(path: str) -> None:
+    """Best-effort .env loader.
+
+    This repo stores local dev configuration in `api-gateway/.env`.
+    When running this Python script directly (outside Docker), developers
+    often won't have exported `DATABASE_URL`.
+
+    We keep this intentionally lightweight (no python-dotenv dependency).
+    Existing environment variables are never overridden.
+    """
+    try:
+        if not os.path.exists(path):
+            return
+        with open(path, 'r', encoding='utf-8') as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        # Never fail startup due to optional env loading
+        return
+
+
+# Try to load local dev env defaults if the user hasn't exported them.
+# (Most importantly: DATABASE_URL)
+_load_env_file_if_present(os.path.join(os.path.dirname(__file__), '..', 'api-gateway', '.env'))
+_load_env_file_if_present(os.path.join(os.path.dirname(__file__), '..', '.env'))
+
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://autotrader:autotrader@localhost:5432/autotrader')
 DATA_CONNECTOR_INTERVAL = int(os.getenv('DATA_CONNECTOR_INTERVAL', 10800))  # 3 hours
@@ -695,34 +730,80 @@ class ConnectorHealthService:
         logger.info("Stopping health check service")
 
 
-async def main(run_once: bool = False):
+async def main(run_once: bool = False, data_only: bool = False, llm_only: bool = False):
     """Main entry point."""
     service = ConnectorHealthService()
-    
+
     # Set up signal handlers for graceful shutdown
     def handle_signal(signum, frame):
         sig_name = signal.Signals(signum).name
         logger.info(f"Received {sig_name} signal, initiating graceful shutdown...")
         service.stop()
-    
+
     # Register signal handlers
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
-    
+
     try:
         await service.initialize()
-        
+
         if run_once:
-            result = await service.run_once()
-            data_conn = result.get('data_connectors', {})
-            llm_conn = result.get('llm_providers', {})
+            start_time = datetime.utcnow()
+
+            results: List[ConnectorCheckResult] = []
+            llm_results: List[LLMCheckResult] = []
+
+            if not llm_only:
+                # Check data connectors
+                results = await service.check_all_connectors()
+                await service.save_results(results)
+
+            if not data_only:
+                # Check LLM providers
+                llm_results = await service.check_all_llm_providers()
+                await service.save_llm_results(llm_results)
+
+            # Summary
+            connected = sum(1 for r in results if r.status == 'connected')
+            disconnected = sum(1 for r in results if r.status == 'disconnected')
+            errors = sum(1 for r in results if r.status == 'error')
+            disabled = sum(1 for r in results if r.status == 'disabled')
+
+            llm_connected = sum(1 for r in llm_results if r.status == 'connected')
+            llm_disconnected = sum(1 for r in llm_results if r.status == 'disconnected')
+            llm_errors = sum(1 for r in llm_results if r.status == 'error')
+
+            duration = (datetime.utcnow() - start_time).total_seconds()
+
+            result = {
+                'timestamp': start_time.isoformat(),
+                'duration_seconds': duration,
+                'data_connectors': {
+                    'connected': connected,
+                    'disconnected': disconnected,
+                    'errors': errors,
+                    'disabled': disabled,
+                    'total': len(results),
+                },
+                'llm_providers': {
+                    'connected': llm_connected,
+                    'disconnected': llm_disconnected,
+                    'errors': llm_errors,
+                    'total': len(llm_results),
+                },
+            }
+
             print(f"\n✅ Health check complete:")
-            print(f"   Data Connectors: {data_conn.get('connected', 0)}/{data_conn.get('total', 0)} connected")
-            print(f"   LLM Providers: {llm_conn.get('connected', 0)}/{llm_conn.get('total', 0)} connected")
+            if not llm_only:
+                data_conn = result.get('data_connectors', {})
+                print(f"   Data Connectors: {data_conn.get('connected', 0)}/{data_conn.get('total', 0)} connected")
+            if not data_only:
+                llm_conn = result.get('llm_providers', {})
+                print(f"   LLM Providers: {llm_conn.get('connected', 0)}/{llm_conn.get('total', 0)} connected")
         else:
             logger.info("Health check service starting in scheduled mode...")
             await service.start_scheduled()
-            
+
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")
     except Exception as e:
@@ -735,9 +816,14 @@ async def main(run_once: bool = False):
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Connector Health Check Service')
     parser.add_argument('--once', action='store_true', help='Run once and exit')
+    parser.add_argument('--data-only', action='store_true', help='Only check data connectors (skip LLM providers)')
+    parser.add_argument('--llm-only', action='store_true', help='Only check LLM providers (skip data connectors)')
     args = parser.parse_args()
-    
-    asyncio.run(main(run_once=args.once))
+
+    if args.data_only and args.llm_only:
+        raise SystemExit("--data-only and --llm-only are mutually exclusive")
+
+    asyncio.run(main(run_once=args.once, data_only=args.data_only, llm_only=args.llm_only))

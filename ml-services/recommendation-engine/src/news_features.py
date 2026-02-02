@@ -411,16 +411,25 @@ class NewsFeatureProvider:
         WHERE symbol IN ({symbols_str})
           AND feature_date = '{feature_date.isoformat()}'
         """
-        
+
         def execute_query():
             client = self._create_clickhouse_client()
             if not client:
                 return []
             try:
                 return client.query(query).result_rows
+            except Exception as e:
+                # In local/dev environments the ClickHouse `symbol_news_features` table
+                # may not exist or may have a different schema (e.g. missing columns).
+                # Returning an empty result here allows the caller to fall back to
+                # computing features from raw `news_articles`.
+                logger.warning(
+                    f"Precomputed news features unavailable for {feature_date.isoformat()} (falling back to raw articles): {e}"
+                )
+                return []
             finally:
                 client.close()
-        
+
         loop = asyncio.get_event_loop()
         rows = await loop.run_in_executor(None, execute_query)
         
@@ -462,48 +471,55 @@ class NewsFeatureProvider:
         """
         symbols_str = ", ".join(f"'{s}'" for s in symbols)
         
+        # Use hasAny() with an explicit symbol array to filter rows.
+        # NOTE: The previous version attempted `has(symbols, symbol)` where `symbol`
+        # was also an alias from `arrayJoin(symbols)`. In ClickHouse, SELECT aliases
+        # are not available in WHERE clauses, so that condition could evaluate incorrectly
+        # (or error), resulting in empty feature sets.
+        symbols_array = ", ".join(f"'{s}'" for s in symbols)
+
         query = f"""
-        WITH 
+        WITH
             '{feature_date.isoformat()}' as target_date,
             symbol_articles AS (
                 SELECT
                     arrayJoin(symbols) as symbol,
                     sentiment_score,
-                    confidence as sentiment_confidence,
+                    sentiment_confidence as sentiment_confidence,
                     published_at,
                     categories
                 FROM news_articles
-                WHERE has(symbols, symbol)
+                WHERE hasAny(symbols, [{symbols_array}])
                   AND published_at >= toDate(target_date) - 14
                   AND published_at < toDate(target_date) + 1
             )
         SELECT
             symbol,
-            
+
             -- 1-day sentiment
             avgIf(sentiment_score, published_at >= toDate(target_date) - 1) as sentiment_1d,
-            
-            -- 3-day sentiment  
+
+            -- 3-day sentiment
             avgIf(sentiment_score, published_at >= toDate(target_date) - 3) as sentiment_3d,
-            
+
             -- 7-day sentiment
             avgIf(sentiment_score, published_at >= toDate(target_date) - 7) as sentiment_7d,
-            
+
             -- 14-day sentiment
             avg(sentiment_score) as sentiment_14d,
-            
+
             -- Article counts
             countIf(published_at >= toDate(target_date) - 1) as article_count_1d,
             countIf(published_at >= toDate(target_date) - 7) as article_count_7d,
-            
+
             -- Confidence
             avgIf(sentiment_confidence, published_at >= toDate(target_date) - 1) as avg_confidence_1d,
-            
+
             -- Volatility
             stddevPopIf(sentiment_score, published_at >= toDate(target_date) - 7) as sentiment_volatility_7d,
-            maxIf(sentiment_score, published_at >= toDate(target_date) - 7) - 
+            maxIf(sentiment_score, published_at >= toDate(target_date) - 7) -
                 minIf(sentiment_score, published_at >= toDate(target_date) - 7) as sentiment_range_7d
-            
+
         FROM symbol_articles
         WHERE symbol IN ({symbols_str})
         GROUP BY symbol

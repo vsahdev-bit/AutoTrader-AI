@@ -34,6 +34,12 @@ async def test_batch_generate_recommendations_saves_to_db(monkeypatch):
                 score=0.0,
                 normalized_score=0.5,
                 confidence=0.1,
+                news_action="HOLD",
+                news_normalized_score=0.5,
+                news_confidence=0.2,
+                technical_action="HOLD",
+                technical_normalized_score=0.5,
+                technical_confidence=0.3,
                 price_at_recommendation=None,
                 news_sentiment_score=None,
                 news_momentum_score=None,
@@ -62,6 +68,15 @@ async def test_batch_generate_recommendations_saves_to_db(monkeypatch):
     assert resp.user_id == "system"
     assert len(resp.recommendations) == 1
     assert dummy_pool.calls, "Expected at least one DB insert call when save_to_db=True"
+
+    # Ensure split confidences are included in the insert args (news_confidence, technical_confidence)
+    query, args = dummy_pool.calls[0]
+    assert 'news_confidence' in query
+    assert 'technical_confidence' in query
+
+    # Args ordering per INSERT statement in main.py: ... news_action, news_normalized_score, news_confidence, technical_action, technical_normalized_score, technical_confidence ...
+    assert args[7] == 0.2
+    assert args[10] == 0.3
 
 
 @pytest.mark.asyncio

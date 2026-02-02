@@ -1386,10 +1386,19 @@ class RecommendationFlowService:
 
             return {
                 "symbol": symbol,
+                # legacy combined
                 "action": recommendation.action,
                 "confidence": recommendation.confidence,
                 "normalized_score": recommendation.normalized_score,
                 "score": recommendation.score,
+                # split tracks
+                "news_action": getattr(recommendation, 'news_action', None),
+                "news_confidence": getattr(recommendation, 'news_confidence', None),
+                "news_normalized_score": getattr(recommendation, 'news_normalized_score', None),
+                "technical_action": getattr(recommendation, 'technical_action', None),
+                "technical_confidence": getattr(recommendation, 'technical_confidence', None),
+                "technical_normalized_score": getattr(recommendation, 'technical_normalized_score', None),
+                # raw components
                 "news_sentiment_score": recommendation.news_sentiment_score,
                 "news_momentum_score": recommendation.news_momentum_score,
                 "technical_trend_score": recommendation.technical_trend_score,
@@ -1503,7 +1512,13 @@ class RecommendationFlowService:
         # Insert into database
         query = """
             INSERT INTO stock_recommendations (
-                symbol, action, score, normalized_score, confidence,
+                symbol,
+                -- legacy combined
+                action, score, normalized_score, confidence,
+                -- split tracks
+                news_action, news_normalized_score, news_confidence,
+                technical_action, technical_normalized_score, technical_confidence,
+                -- features
                 price_at_recommendation,
                 news_sentiment_score, news_momentum_score,
                 technical_trend_score, technical_momentum_score,
@@ -1511,21 +1526,55 @@ class RecommendationFlowService:
                 news_sentiment_1d, article_count_24h,
                 explanation, data_sources_used, generated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18
+                $1,
+                $2, $3, $4, $5,
+                $6, $7, $8,
+                $9, $10, $11,
+                $12,
+                $13, $14,
+                $15, $16,
+                $17, $18, $19,
+                $20, $21,
+                $22, $23, $24
             )
         """
         
         import json
         
+        import math
+
+        def _db_float(v, *, min_value=None, max_value=None):
+            if v is None:
+                return None
+            try:
+                n = float(v)
+            except Exception:
+                return None
+            if not math.isfinite(n):
+                return None
+            if min_value is not None:
+                n = max(min_value, n)
+            if max_value is not None:
+                n = min(max_value, n)
+            return n
+
         async with self.db_pool.acquire() as conn:
             await conn.execute(
                 query,
                 symbol,
+                # legacy combined
                 recommendation.action,
-                raw_score,
-                normalized_score,
-                recommendation.confidence,
+                _db_float(raw_score, min_value=-1.0, max_value=1.0),
+                _db_float(normalized_score, min_value=0.0, max_value=1.0),
+                _db_float(recommendation.confidence, min_value=0.0, max_value=1.0),
+                # split tracks
+                getattr(recommendation, 'news_action', None),
+                _db_float(getattr(recommendation, 'news_normalized_score', None), min_value=0.0, max_value=1.0),
+                _db_float(getattr(recommendation, 'news_confidence', None), min_value=0.0, max_value=1.0),
+                getattr(recommendation, 'technical_action', None),
+                _db_float(getattr(recommendation, 'technical_normalized_score', None), min_value=0.0, max_value=1.0),
+                _db_float(getattr(recommendation, 'technical_confidence', None), min_value=0.0, max_value=1.0),
+                # features
                 current_price,
                 news_sentiment_score,
                 news_momentum_score,
@@ -1875,20 +1924,43 @@ async def run_http_server():
             await service.db_pool.execute(
                 """
                 INSERT INTO stock_recommendations (
-                    symbol, action, score, normalized_score, confidence,
+                    symbol,
+                    -- legacy combined
+                    action, score, normalized_score, confidence,
+                    -- split tracks
+                    news_action, news_normalized_score, news_confidence,
+                    technical_action, technical_normalized_score, technical_confidence,
+                    -- features
                     price_at_recommendation,
                     news_sentiment_score, news_momentum_score,
                     technical_trend_score, technical_momentum_score,
                     rsi, macd_histogram, price_vs_sma20,
                     news_sentiment_1d, article_count_24h,
                     explanation, data_sources_used, generated_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+                ) VALUES (
+                    $1,
+                    $2,$3,$4,$5,
+                    $6,$7,$8,
+                    $9,$10,$11,
+                    $12,
+                    $13,$14,
+                    $15,$16,
+                    $17,$18,$19,
+                    $20,$21,
+                    $22,$23,NOW()
+                )
                 """,
                 symbol,
                 rec_obj.action,
                 float(rec_obj.score) if rec_obj.score is not None else 0.0,
                 float(rec_obj.normalized_score) if rec_obj.normalized_score is not None else 0.5,
                 float(rec_obj.confidence) if rec_obj.confidence is not None else 0.0,
+                getattr(rec_obj, 'news_action', None),
+                getattr(rec_obj, 'news_normalized_score', None),
+                getattr(rec_obj, 'news_confidence', None),
+                getattr(rec_obj, 'technical_action', None),
+                getattr(rec_obj, 'technical_normalized_score', None),
+                getattr(rec_obj, 'technical_confidence', None),
                 rec_obj.price_at_recommendation,
                 rec_obj.news_sentiment_score,
                 rec_obj.news_momentum_score,
@@ -2189,20 +2261,43 @@ async def run_with_api():
                 await service.db_pool.execute(
                     """
                     INSERT INTO stock_recommendations (
-                        symbol, action, score, normalized_score, confidence,
+                        symbol,
+                        -- legacy combined
+                        action, score, normalized_score, confidence,
+                        -- split tracks
+                        news_action, news_normalized_score, news_confidence,
+                        technical_action, technical_normalized_score, technical_confidence,
+                        -- features
                         price_at_recommendation,
                         news_sentiment_score, news_momentum_score,
                         technical_trend_score, technical_momentum_score,
                         rsi, macd_histogram, price_vs_sma20,
                         news_sentiment_1d, article_count_24h,
                         explanation, data_sources_used, generated_at
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+                    ) VALUES (
+                        $1,
+                        $2,$3,$4,$5,
+                        $6,$7,$8,
+                        $9,$10,$11,
+                        $12,
+                        $13,$14,
+                        $15,$16,
+                        $17,$18,$19,
+                        $20,$21,
+                        $22,$23,NOW()
+                    )
                     """,
                     symbol,
                     rec_obj.action,
                     float(rec_obj.score) if rec_obj.score is not None else 0.0,
                     float(rec_obj.normalized_score) if rec_obj.normalized_score is not None else 0.5,
                     float(rec_obj.confidence) if rec_obj.confidence is not None else 0.0,
+                    getattr(rec_obj, 'news_action', None),
+                    getattr(rec_obj, 'news_normalized_score', None),
+                    getattr(rec_obj, 'news_confidence', None),
+                    getattr(rec_obj, 'technical_action', None),
+                    getattr(rec_obj, 'technical_normalized_score', None),
+                    getattr(rec_obj, 'technical_confidence', None),
                     rec_obj.price_at_recommendation,
                     rec_obj.news_sentiment_score,
                     rec_obj.news_momentum_score,

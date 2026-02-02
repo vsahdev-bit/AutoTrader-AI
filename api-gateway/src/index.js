@@ -1,4 +1,5 @@
 import express from 'express';
+import { fetchYahooMarketCap } from './yahooFinance.js';
 import cors from 'cors';
 import pg from 'pg';
 import dotenv from 'dotenv';
@@ -377,6 +378,35 @@ app.post('/api/options/:userId/watchlist', async (req, res) => {
   }
 });
 
+// Star/unstar an options watchlist symbol
+app.put('/api/options/:userId/watchlist/:symbol/star', async (req, res) => {
+  const { userId, symbol } = req.params;
+  const { starred } = req.body;
+
+  if (!uuidRegex.test(userId)) {
+    return res.status(400).json({ error: 'Invalid userId format' });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE options_watchlist
+       SET is_starred = $1
+       WHERE user_id = $2 AND symbol = $3
+       RETURNING *`,
+      [!!starred, userId, symbol.toUpperCase()]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Symbol not found in options watchlist' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating options watchlist star:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Remove symbol from options watchlist
 app.delete('/api/options/:userId/watchlist/:symbol', async (req, res) => {
   const { userId, symbol } = req.params;
@@ -506,7 +536,7 @@ app.get('/api/v1/stocks/quotes', async (req, res) => {
           changePercent: currentPrice && prevClose ? ((currentPrice - prevClose) / prevClose) * 100 : null,
           fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ?? null,
           fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? null,
-          marketCap: meta.marketCap ?? null,
+          marketCap: meta.marketCap ?? (await fetchYahooMarketCap(symbol)) ?? null,
           currency: meta.currency || 'USD',
           exchange: meta.exchangeName || meta.exchange,
           lastUpdated: new Date().toISOString(),
@@ -601,7 +631,7 @@ app.get('/api/v1/stocks/quotes/:symbol', async (req, res) => {
       changePercent: currentPrice && prevClose ? ((currentPrice - prevClose) / prevClose) * 100 : null,
       fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh ?? null,
       fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? null,
-      marketCap: meta.marketCap ?? null,
+      marketCap: meta.marketCap ?? (await fetchYahooMarketCap(upperSymbol)) ?? null,
       currency: meta.currency || 'USD',
       exchange: meta.exchangeName || meta.exchange,
       lastUpdated: new Date().toISOString(),
@@ -1347,10 +1377,28 @@ app.post('/api/v1/recommendations/generate', async (req, res) => {
         console.error('Recommendation engine request timed out');
       });
 
+      const normalizeSymbol = (s) => {
+        if (s === null || s === undefined) return null
+        // Remove all whitespace (spaces, tabs, newlines) then uppercase
+        const cleaned = String(s).replace(/\s+/g, '').toUpperCase()
+        return cleaned.length ? cleaned : null
+      }
+
       // If caller didn't pass symbols, run for all watchlist symbols
-      const symbolsToRun = symbols && Array.isArray(symbols)
+      const symbolsToRunRaw = symbols && Array.isArray(symbols)
         ? symbols
         : (await pool.query('SELECT symbol FROM user_watchlist')).rows.map(r => r.symbol);
+
+      // Sanitize + de-dupe while preserving order
+      const seen = new Set()
+      const symbolsToRun = []
+      for (const sym of symbolsToRunRaw) {
+        const norm = normalizeSymbol(sym)
+        if (!norm) continue
+        if (seen.has(norm)) continue
+        seen.add(norm)
+        symbolsToRun.push(norm)
+      }
 
       engineReq.write(JSON.stringify({
         user_id: 'system',
@@ -1463,8 +1511,19 @@ app.get('/api/v1/recommendations/generation-status/:runId', async (req, res) => 
  * expected by the web-app TypeScript types.
  */
 function mapStockRecommendationRow(row) {
-  const asNumberOrNull = (v) => (v === null || v === undefined ? null : parseFloat(v))
+  const asNumberOrNull = (v) => {
+    if (v === null || v === undefined) return null
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? n : null
+  }
 
+  // Backward compatibility:
+  // Older DB rows (or older schemas) may not have split-track columns.
+  // In that case, fall back to legacy combined fields.
+  const legacyAction = row.action || 'HOLD'
+  const legacyNormalizedScore = asNumberOrNull(row.normalized_score)
+  const legacyConfidence = asNumberOrNull(row.confidence)
+  // Note: legacyNormalizedScore/legacyConfidence are used for the overall fields only.
   let explanation = row.explanation
   if (typeof explanation === 'string') {
     try {
@@ -1483,18 +1542,226 @@ function mapStockRecommendationRow(row) {
     }
   }
 
+  let rawScore = asNumberOrNull(row.score)
+  let normalizedScore =
+    asNumberOrNull(row.normalized_score) ??
+    (typeof rawScore === 'number' ? (rawScore + 1) / 2 : null)
+
+  // Component scores (may be needed to repair split-track fields if they were incorrectly stored)
+  const newsSentimentScore = asNumberOrNull(row.news_sentiment_score)
+  const newsMomentumScore = asNumberOrNull(row.news_momentum_score)
+  const technicalTrendScore = asNumberOrNull(row.technical_trend_score)
+  const technicalMomentumScore = asNumberOrNull(row.technical_momentum_score)
+
+  // Read split fields as stored
+  let newsNormalizedScore = asNumberOrNull(row.news_normalized_score)
+  let technicalNormalizedScore = asNumberOrNull(row.technical_normalized_score)
+  const newsConfidenceFromDb = asNumberOrNull(row.news_confidence)
+  const technicalConfidenceFromDb = asNumberOrNull(row.technical_confidence)
+
+  let newsConfidence = newsConfidenceFromDb
+  let technicalConfidence = technicalConfidenceFromDb
+
+  // Backward-compatible fallback: if per-track confidences are missing (common in older rows),
+  // use the overall confidence so the UI doesn't show "Unknown".
+  const usedFallbackNewsConfidence = newsConfidence === null && typeof legacyConfidence === 'number'
+  const usedFallbackTechConfidence = technicalConfidence === null && typeof legacyConfidence === 'number'
+
+  if (usedFallbackNewsConfidence) newsConfidence = legacyConfidence
+  if (usedFallbackTechConfidence) technicalConfidence = legacyConfidence
+
+  // Safety: if split-track scores/confidences appear to be incorrectly copied from the overall values,
+  // attempt a best-effort repair (scores) and avoid showing misleading duplicated confidences.
+  //
+  // This situation has been observed where:
+  //   newsNormalizedScore == technicalNormalizedScore == normalizedScore
+  // despite news component scores being 0 while technical scores are non-zero.
+  const almostEqual = (a, b, eps = 1e-6) =>
+    typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < eps
+
+  const looksCopiedFromOverallScore =
+    normalizedScore !== null &&
+    almostEqual(newsNormalizedScore, normalizedScore) &&
+    almostEqual(technicalNormalizedScore, normalizedScore)
+
+  if (looksCopiedFromOverallScore) {
+    // Recompute per-track raw scores using the same default within-track normalization as the engine:
+    // - News: 0.30/0.20 -> 0.6/0.4
+    // - Tech: 0.25/0.25 -> 0.5/0.5
+    // (If regime-specific weights were used, we don't have them here; this is a safe baseline.)
+    const nss = newsSentimentScore ?? 0
+    const nms = newsMomentumScore ?? 0
+    const tts = technicalTrendScore ?? 0
+    const tms = technicalMomentumScore ?? 0
+
+    const newsRaw = Math.max(-1, Math.min(1, nss * 0.6 + nms * 0.4))
+    const techRaw = Math.max(-1, Math.min(1, tts * 0.5 + tms * 0.5))
+
+    newsNormalizedScore = (newsRaw + 1) / 2
+    technicalNormalizedScore = (techRaw + 1) / 2
+  }
+
+  // If split-track normalized scores are missing/NaN, derive them from component scores.
+  // This prevents the UI's News/Tech bars from going blank when the DB contains NaN.
+  if (newsNormalizedScore === null) {
+    const nss = newsSentimentScore
+    const nms = newsMomentumScore
+    if (typeof nss === 'number' || typeof nms === 'number') {
+      const newsRaw = Math.max(-1, Math.min(1, (nss ?? 0) * 0.6 + (nms ?? 0) * 0.4))
+      newsNormalizedScore = (newsRaw + 1) / 2
+    } else if (typeof normalizedScore === 'number') {
+      // last resort: keep UI consistent
+      newsNormalizedScore = normalizedScore
+    }
+  }
+
+  if (technicalNormalizedScore === null) {
+    const tts = technicalTrendScore
+    const tms = technicalMomentumScore
+    if (typeof tts === 'number' || typeof tms === 'number') {
+      const techRaw = Math.max(-1, Math.min(1, (tts ?? 0) * 0.5 + (tms ?? 0) * 0.5))
+      technicalNormalizedScore = (techRaw + 1) / 2
+    } else if (typeof normalizedScore === 'number') {
+      technicalNormalizedScore = normalizedScore
+    }
+  }
+
+  // If split-track confidences are present in DB and appear copied from the overall confidence,
+  // prefer null over misleading duplicated values.
+  // IMPORTANT: do NOT null out values we populated via fallback.
+  const looksCopiedFromOverallConfidence =
+    legacyConfidence !== null &&
+    !usedFallbackNewsConfidence &&
+    !usedFallbackTechConfidence &&
+    almostEqual(newsConfidence, legacyConfidence) &&
+    almostEqual(technicalConfidence, legacyConfidence)
+
+  if (looksCopiedFromOverallConfidence) {
+    // We cannot reliably reconstruct per-track confidence here; prefer null over misleading data.
+    newsConfidence = null
+    technicalConfidence = null
+  }
+
+  // If legacy combined fields are missing/null (common when only split scores are stored),
+  // derive a best-effort overall score so clients still get the combined normalizedScore.
+  if (normalizedScore === null) {
+    // 1) Prefer deriving from component raw scores using weights (if present), otherwise defaults.
+    const sw =
+      (explanation && (explanation.signal_weights || explanation.signalWeights)) ||
+      row.signal_weights ||
+      row.signalWeights ||
+      null
+
+    const defaultWeights = {
+      news_sentiment: 0.30,
+      news_momentum: 0.20,
+      technical_trend: 0.25,
+      technical_momentum: 0.25,
+    }
+
+    const weights = {
+      news_sentiment: asNumberOrNull(sw?.news_sentiment) ?? asNumberOrNull(sw?.newsSentiment) ?? defaultWeights.news_sentiment,
+      news_momentum: asNumberOrNull(sw?.news_momentum) ?? asNumberOrNull(sw?.newsMomentum) ?? defaultWeights.news_momentum,
+      technical_trend: asNumberOrNull(sw?.technical_trend) ?? asNumberOrNull(sw?.technicalTrend) ?? defaultWeights.technical_trend,
+      technical_momentum: asNumberOrNull(sw?.technical_momentum) ?? asNumberOrNull(sw?.technicalMomentum) ?? defaultWeights.technical_momentum,
+    }
+
+    const components = [
+      { score: newsSentimentScore, w: weights.news_sentiment },
+      { score: newsMomentumScore, w: weights.news_momentum },
+      { score: technicalTrendScore, w: weights.technical_trend },
+      { score: technicalMomentumScore, w: weights.technical_momentum },
+    ]
+
+    const sum = components.reduce(
+      (acc, c) => {
+        if (typeof c.score !== 'number' || typeof c.w !== 'number') return acc
+        if (!Number.isFinite(c.score) || !Number.isFinite(c.w) || c.w <= 0) return acc
+        return { wSum: acc.wSum + c.w, scoreSum: acc.scoreSum + c.score * c.w }
+      },
+      { wSum: 0, scoreSum: 0 }
+    )
+
+    if (sum.wSum > 0) {
+      const derivedRaw = Math.max(-1, Math.min(1, sum.scoreSum / sum.wSum))
+      rawScore = rawScore ?? derivedRaw
+      normalizedScore = (derivedRaw + 1) / 2
+    } else {
+      // 2) Fall back to averaging split-track normalized scores if present.
+      const vals = [newsNormalizedScore, technicalNormalizedScore].filter(v => typeof v === 'number' && Number.isFinite(v))
+      if (vals.length > 0) {
+        normalizedScore = vals.reduce((a, b) => a + b, 0) / vals.length
+        const derivedRaw = Math.max(-1, Math.min(1, normalizedScore * 2 - 1))
+        rawScore = rawScore ?? derivedRaw
+      }
+    }
+
+    if (typeof normalizedScore === 'number') {
+      normalizedScore = Math.max(0, Math.min(1, normalizedScore))
+    }
+  }
+
+  // Store repaired values on the row object for use in the mapping below (not returned to clients)
+  row.__mappedSplit = {
+    newsNormalizedScore,
+    technicalNormalizedScore,
+    newsConfidence,
+    technicalConfidence,
+    newsSentimentScore,
+    newsMomentumScore,
+    technicalTrendScore,
+    technicalMomentumScore,
+  }
+
+  const actionFromNormalized = (ns) => {
+    if (typeof ns !== 'number' || !Number.isFinite(ns)) return 'HOLD'
+    if (ns > 0.8) return 'BUY'
+    if (ns < 0.5) return 'SELL'
+    return 'HOLD'
+  }
+
+  // Derive actions from the respective normalized scores so the UI can show Overall/News/Tech actions.
+  // Prefer stored actions if present, but ensure they are consistent and never blank.
+  // Prefer actions derived from scores when the scores are present; stored actions can become stale/inconsistent.
+  const derivedOverallAction = actionFromNormalized(normalizedScore)
+  const derivedNewsAction = actionFromNormalized(newsNormalizedScore)
+  const derivedTechAction = actionFromNormalized(technicalNormalizedScore)
+
+  const overallAction = ((typeof normalizedScore === 'number' ? derivedOverallAction : (row.action || legacyAction || derivedOverallAction)) || 'HOLD').toUpperCase()
+
   return {
     id: row.id,
-    symbol: row.symbol,
-    action: row.action,
-    score: asNumberOrNull(row.score),
-    normalizedScore: asNumberOrNull(row.normalized_score),
-    confidence: asNumberOrNull(row.confidence),
+    // Safety: DB may contain whitespace/newlines in symbol
+    symbol: (row.symbol || '').trim(),
+
+    // Legacy combined (kept for backward compatibility)
+    // Ensure these keys are always present (never undefined), so the UI can render Overall bars.
+    action: overallAction,
+    confidence: legacyConfidence ?? null,
+    normalizedScore: normalizedScore ?? null,
+    // Back-compat for clients expecting snake_case
+    normalized_score: normalizedScore ?? null,
+
+    // Split-track outputs
+    // IMPORTANT: Do NOT silently fall back scores/confidences to legacy combined values.
+    // If split columns are missing/unpopulated, return null so the UI doesn't show misleading "same" values.
+    newsAction: ((typeof newsNormalizedScore === 'number' ? derivedNewsAction : (row.news_action || derivedNewsAction || overallAction)) || overallAction).toUpperCase(),
+    newsNormalizedScore: (row.__mappedSplit?.newsNormalizedScore ?? asNumberOrNull(row.news_normalized_score)),
+    newsConfidence: (row.__mappedSplit?.newsConfidence ?? asNumberOrNull(row.news_confidence)),
+
+    technicalAction: ((typeof technicalNormalizedScore === 'number' ? derivedTechAction : (row.technical_action || derivedTechAction || overallAction)) || overallAction).toUpperCase(),
+    technicalNormalizedScore: (row.__mappedSplit?.technicalNormalizedScore ?? asNumberOrNull(row.technical_normalized_score)),
+    technicalConfidence: (row.__mappedSplit?.technicalConfidence ?? asNumberOrNull(row.technical_confidence)),
+
+    // Legacy raw score kept only for internal debugging (do not rely on it)
+    // If not stored, we may have derived it above from components/split tracks.
+    score: rawScore,
+
     priceAtRecommendation: asNumberOrNull(row.price_at_recommendation),
-    newsSentimentScore: asNumberOrNull(row.news_sentiment_score),
-    newsMomentumScore: asNumberOrNull(row.news_momentum_score),
-    technicalTrendScore: asNumberOrNull(row.technical_trend_score),
-    technicalMomentumScore: asNumberOrNull(row.technical_momentum_score),
+    newsSentimentScore: (row.__mappedSplit?.newsSentimentScore ?? asNumberOrNull(row.news_sentiment_score)),
+    newsMomentumScore: (row.__mappedSplit?.newsMomentumScore ?? asNumberOrNull(row.news_momentum_score)),
+    technicalTrendScore: (row.__mappedSplit?.technicalTrendScore ?? asNumberOrNull(row.technical_trend_score)),
+    technicalMomentumScore: (row.__mappedSplit?.technicalMomentumScore ?? asNumberOrNull(row.technical_momentum_score)),
     rsi: asNumberOrNull(row.rsi),
     macdHistogram: asNumberOrNull(row.macd_histogram),
     priceVsSma20: asNumberOrNull(row.price_vs_sma20),
@@ -1517,34 +1784,34 @@ app.get('/api/v1/recommendations', async (req, res) => {
     
     const result = await pool.query(`
       SELECT DISTINCT ON (symbol)
-        id,
-        symbol,
-        action,
-        score,
-        normalized_score,
-        confidence,
-        price_at_recommendation,
-        news_sentiment_score,
-        news_momentum_score,
-        technical_trend_score,
-        technical_momentum_score,
-        rsi,
-        macd_histogram,
-        price_vs_sma20,
-        news_sentiment_1d,
-        article_count_24h,
-        explanation,
-        generated_at,
-        data_sources_used,
-        created_at
+        *
       FROM stock_recommendations
       ORDER BY symbol, generated_at DESC
       LIMIT $1
     `, [parseInt(limit)]);
     
+    const recommendations = result.rows
+      .map(mapStockRecommendationRow)
+      .map(r => {
+        // Hard guarantee of legacy combined fields + symbol hygiene
+        const score = (r.score !== null && r.score !== undefined) ? Number(r.score) : null
+        // Treat null the same as missing: if mapping produced null, derive from raw score
+        const normalizedScore = (r.normalizedScore ?? (typeof score === 'number' ? (score + 1) / 2 : null))
+
+        return {
+          ...r,
+          symbol: (r.symbol || '').trim(),
+          action: r.action ?? 'HOLD',
+          confidence: r.confidence ?? null,
+          normalizedScore: normalizedScore ?? null,
+          // Back-compat for clients expecting snake_case
+          normalized_score: normalizedScore ?? null,
+        }
+      })
+
     res.json({
-      recommendations: result.rows.map(mapStockRecommendationRow),
-      count: result.rows.length,
+      recommendations,
+      count: recommendations.length,
     });
   } catch (error) {
     console.error('Error getting recommendations:', error);
@@ -1563,36 +1830,35 @@ app.get('/api/v1/recommendations/history/:symbol', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        id,
-        symbol,
-        action,
-        score,
-        normalized_score,
-        confidence,
-        price_at_recommendation,
-        news_sentiment_score,
-        news_momentum_score,
-        technical_trend_score,
-        technical_momentum_score,
-        rsi,
-        macd_histogram,
-        price_vs_sma20,
-        news_sentiment_1d,
-        article_count_24h,
-        explanation,
-        generated_at,
-        data_sources_used,
-        created_at
+        *
       FROM stock_recommendations
       WHERE symbol = $1
       ORDER BY generated_at DESC
       LIMIT $2
     `, [symbol.toUpperCase(), parseInt(limit)]);
     
+    const recommendations = result.rows
+      .map(mapStockRecommendationRow)
+      .map(r => {
+        const score = (r.score !== null && r.score !== undefined) ? Number(r.score) : null
+        // Treat null the same as missing: if mapping produced null, derive from raw score
+        const normalizedScore = (r.normalizedScore ?? (typeof score === 'number' ? (score + 1) / 2 : null))
+
+        return {
+          ...r,
+          symbol: (r.symbol || '').trim(),
+          action: r.action ?? 'HOLD',
+          confidence: r.confidence ?? null,
+          normalizedScore: normalizedScore ?? null,
+          // Back-compat for clients expecting snake_case
+          normalized_score: normalizedScore ?? null,
+        }
+      })
+
     res.json({
       symbol: symbol.toUpperCase(),
-      recommendations: result.rows.map(mapStockRecommendationRow),
-      count: result.rows.length,
+      recommendations,
+      count: recommendations.length,
     });
   } catch (error) {
     console.error('Error getting recommendation history:', error);
@@ -1699,18 +1965,40 @@ app.get('/api/v1/llm-connectors/status', async (req, res) => {
 app.post('/api/v1/llm-connectors/refresh', async (req, res) => {
   try {
     const now = new Date().toISOString();
-    
+
     // Update status to show refresh in progress
     await pool.query(`
-      UPDATE llm_connector_status 
+      UPDATE llm_connector_status
       SET status_message = 'Refresh requested at ' || $1::text,
           last_check_at = NOW()
     `, [now]);
-    
+
     console.log('LLM connector health check requested at', now);
-    
-    res.json({ 
-      success: true, 
+
+    // Try to spawn the health check process for LLM connectors.
+    // This works when running locally but may fail in Docker if Python/ML services are not present.
+    try {
+      const { exec } = await import('child_process');
+
+      exec('python3 /app/../ml-services/connector_health_service.py --once --llm-only', {
+        cwd: '/app/..',
+        timeout: 180000, // 3 minute timeout
+      }, (error, stdout, stderr) => {
+        if (error) {
+          console.log(
+            'LLM health check process not available in this environment. Run manually: python3 ml-services/connector_health_service.py --once --llm-only'
+          );
+          if (stderr) console.log('LLM health check stderr:', stderr);
+        } else {
+          console.log('LLM health check completed:', stdout);
+        }
+      });
+    } catch (spawnError) {
+      console.log('Could not spawn LLM health check process:', spawnError.message);
+    }
+
+    res.json({
+      success: true,
       message: 'LLM health check started. Status will update shortly.',
     });
   } catch (error) {
@@ -3070,26 +3358,47 @@ app.post('/api/v1/recommendations/on-demand', async (req, res) => {
     const result = await engineResponse.json();
     
     // Format the response to match the frontend expectations
+    // NOTE: GetRecommendation.tsx expects legacy combined fields: action/normalizedScore/confidence
+    // while StockRecommendations expects split fields: newsAction/technicalAction/... as well.
     res.json({
+      // Safety: always trim and upper-case symbol in responses
       symbol: upperSymbol,
-      companyName: companyName || result.company_name || upperSymbol,
-      action: result.action || 'HOLD',
-      confidence: result.confidence || 0,
-      normalizedScore: result.normalized_score || result.normalizedScore || 0,
-      // Include raw score for parity with recommendations table
+      companyName: (companyName || result.company_name || upperSymbol).trim(),
+
+      // --- legacy combined fields (required by GetRecommendation page) ---
+      // Ensure keys are always present (never undefined)
+      action: (result.action ?? result.recommendation_action ?? 'HOLD'),
+      normalizedScore:
+        result.normalized_score ??
+        result.normalizedScore ??
+        // fallback for very old payloads
+        (typeof result.score === 'number' ? (result.score + 1) / 2 : null),
+      confidence: (result.confidence ?? result.confidenceScore ?? null),
+
+      // --- split fields (newer change; keep for split-primary UI) ---
+      newsAction: result.news_action || result.newsAction || 'HOLD',
+      newsNormalizedScore: result.news_normalized_score ?? result.newsNormalizedScore ?? null,
+      newsConfidence: result.news_confidence ?? result.newsConfidence ?? null,
+
+      technicalAction: result.technical_action || result.technicalAction || 'HOLD',
+      technicalNormalizedScore: result.technical_normalized_score ?? result.technicalNormalizedScore ?? null,
+      technicalConfidence: result.technical_confidence ?? result.technicalConfidence ?? null,
+
+      // Raw score (-1..1)
       score: result.score ?? null,
+
+      // Component scores
       newsSentimentScore: result.news_sentiment_score ?? result.newsSentimentScore ?? null,
       newsMomentumScore: result.news_momentum_score ?? result.newsMomentumScore ?? null,
       technicalTrendScore: result.technical_trend_score ?? result.technicalTrendScore ?? null,
       technicalMomentumScore: result.technical_momentum_score ?? result.technicalMomentumScore ?? null,
+
       priceAtRecommendation: result.price_at_recommendation ?? result.priceAtRecommendation ?? null,
       explanation: result.explanation || null,
-      // Include regime + signal weights so UI can show full details
       regime: result.regime ?? null,
       signalWeights: result.signal_weights ?? result.signalWeights ?? null,
       generatedAt: result.generated_at || new Date().toISOString(),
-      // Provide a stable-ish id for table row rendering
-      id: `${upperSymbol}-${Date.now()}`, 
+      id: `${upperSymbol}-${Date.now()}`,
     });
     
   } catch (error) {
