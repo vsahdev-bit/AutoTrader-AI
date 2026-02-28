@@ -1548,8 +1548,9 @@ function mapStockRecommendationRow(row) {
     (typeof rawScore === 'number' ? (rawScore + 1) / 2 : null)
 
   // Component scores (may be needed to repair split-track fields if they were incorrectly stored)
-  const newsSentimentScore = asNumberOrNull(row.news_sentiment_score)
-  const newsMomentumScore = asNumberOrNull(row.news_momentum_score)
+  // Default to 0.0 (neutral) when no news data is available
+  const newsSentimentScore = asNumberOrNull(row.news_sentiment_score) ?? 0.0
+  const newsMomentumScore = asNumberOrNull(row.news_momentum_score) ?? 0.0
   const technicalTrendScore = asNumberOrNull(row.technical_trend_score)
   const technicalMomentumScore = asNumberOrNull(row.technical_momentum_score)
 
