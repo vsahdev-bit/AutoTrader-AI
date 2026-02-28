@@ -14,9 +14,9 @@
  * - Responsive design with Tailwind CSS
  * 
  * Scoring System:
- * - BUY: normalized score > 0.8
- * - SELL: normalized score < 0.5
- * - HOLD: 0.5 <= normalized score <= 0.8
+ * - BUY: normalized score > 0.7
+ * - SELL: normalized score < 0.4
+ * - HOLD: 0.4 <= normalized score <= 0.7
  */
 
 import { useState, useEffect, useRef } from 'react'
@@ -979,7 +979,7 @@ function StockRecommendationTable({
                   </Tooltip>
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <Tooltip text="AI's recommended action: BUY (score > 80%), SELL (score < 50%), or HOLD (50-80%). Based on combined analysis of news sentiment and technical indicators.">
+                  <Tooltip text="AI's recommended action: BUY (score > 70%), SELL (score < 40%), or HOLD (40-70%). Based on combined analysis of news sentiment and technical indicators.">
                     Action
                   </Tooltip>
                 </th>
@@ -1864,15 +1864,15 @@ export default function StockRecommendations() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
                 <div className="flex items-center space-x-3">
                   <span className={getActionBadgeClasses('BUY')}>BUY</span>
-                  <span className="text-gray-600">Score &gt; 80%</span>
+                  <span className="text-gray-600">Score &gt; 70%</span>
                 </div>
                 <div className="flex items-center space-x-3">
                   <span className={getActionBadgeClasses('HOLD')}>HOLD</span>
-                  <span className="text-gray-600">Score 50% - 80%</span>
+                  <span className="text-gray-600">Score 40% - 70%</span>
                 </div>
                 <div className="flex items-center space-x-3">
                   <span className={getActionBadgeClasses('SELL')}>SELL</span>
-                  <span className="text-gray-600">Score &lt; 50%</span>
+                  <span className="text-gray-600">Score &lt; 40%</span>
                 </div>
               </div>
               <p className="mt-4 text-xs text-gray-500">
