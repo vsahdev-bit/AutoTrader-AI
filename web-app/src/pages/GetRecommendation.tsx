@@ -777,7 +777,7 @@ export default function GetRecommendation() {
                       </Tooltip>
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">
-                      <Tooltip text="AI's recommended action: BUY (score > 80%), SELL (score < 50%), or HOLD (50-80%). Based on combined analysis of news sentiment and technical indicators.">
+                      <Tooltip text="AI's recommended action: BUY (score > 70%), SELL (score < 40%), or HOLD (40-70%). Based on combined analysis of news sentiment and technical indicators.">
                         Action
                       </Tooltip>
                     </th>

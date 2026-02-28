@@ -495,8 +495,8 @@ class RecommendationEngine:
     - High volatility: Reduce momentum signals, scale down confidence
     
     Thresholds:
-    - BUY: Combined score > 0.6 (normalized > 0.8)
-    - SELL: Combined score < 0.0 (normalized < 0.5)
+    - BUY: Combined score > 0.4 (normalized > 0.7)
+    - SELL: Combined score < -0.2 (normalized < 0.4)
     - HOLD: Otherwise
     
     Signal Agreement Bonus:
@@ -512,8 +512,8 @@ class RecommendationEngine:
     
     # Default action thresholds (score range is -1 to 1, normalized to 0 to 1 for display)
     # These may be adjusted by regime - see get_regime_adjusted_thresholds()
-    DEFAULT_BUY_THRESHOLD = 0.6   # Raw score threshold: normalized > 0.8
-    DEFAULT_SELL_THRESHOLD = 0.0  # Raw score threshold: normalized < 0.5
+    DEFAULT_BUY_THRESHOLD = 0.4   # Raw score threshold: normalized > 0.7
+    DEFAULT_SELL_THRESHOLD = -0.2  # Raw score threshold: normalized < 0.4
     
     # Regime-specific threshold adjustments
     # In risky regimes, we require stronger signals (higher thresholds)
