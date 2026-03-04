@@ -4,6 +4,7 @@ import cors from 'cors';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import http from 'http';
+import https from 'https';
 import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } from 'plaid';
 import { 
   initializeVault, 
@@ -15,6 +16,7 @@ import {
   validateTradeAuthToken,
   consumeTradeAuthToken,
   hashValue,
+  getSecret,
 } from './vault.js';
 
 dotenv.config();
@@ -3407,6 +3409,604 @@ app.post('/api/v1/recommendations/on-demand', async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to generate recommendation. Please try again.' 
     });
+  }
+});
+
+// ============== RESEARCH STOCKS ROUTES ==============
+
+/**
+ * Get available search criteria for research stocks
+ */
+app.get('/api/v1/research-stocks/criteria', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name, description, sql_hint, is_active
+      FROM research_stock_criteria
+      WHERE is_active = true
+      ORDER BY id
+    `);
+    
+    res.json({ criteria: result.rows });
+  } catch (error) {
+    console.error('Error fetching research stock criteria:', error);
+    res.status(500).json({ error: 'Failed to fetch criteria' });
+  }
+});
+
+/**
+ * Scrape stock data from Yahoo Finance
+ * Sources: most-active, gainers, losers
+ */
+app.post('/api/v1/research-stocks/scrape', async (req, res) => {
+  try {
+    // Check if we have recent data (within 15 minutes)
+    const cacheCheck = await pool.query(`
+      SELECT MAX(scraped_at) as last_scrape
+      FROM research_stocks
+      WHERE scraped_at > NOW() - INTERVAL '15 minutes'
+    `);
+    
+    if (cacheCheck.rows[0]?.last_scrape) {
+      return res.json({
+        success: true,
+        cached: true,
+        message: 'Using cached data from recent scrape',
+        lastScrape: cacheCheck.rows[0].last_scrape
+      });
+    }
+    
+    // Create a new scrape run
+    const runResult = await pool.query(`
+      INSERT INTO research_stocks_scrape_runs (status, sources_scraped)
+      VALUES ('in_progress', ARRAY[]::text[])
+      RETURNING id
+    `);
+    const runId = runResult.rows[0].id;
+    
+    // Use Yahoo Finance screener API endpoints (more reliable than scraping HTML)
+    const sources = [
+      { name: 'most-active', sortField: 'dayvolume', sortType: 'DESC' },
+      { name: 'gainers', sortField: 'percentchange', sortType: 'DESC' },
+      { name: 'losers', sortField: 'percentchange', sortType: 'ASC' },
+      { name: 'trending', sortField: 'trending', sortType: 'DESC', scrapeHtml: true }
+    ];
+    
+    const scrapeTime = new Date();
+    let totalStocks = 0;
+    const scrapedSources = [];
+    
+    // Process each source sequentially
+    for (const source of sources) {
+      try {
+        console.log(`Fetching ${source.name} from Yahoo Finance API...`);
+        
+        let quotes = [];
+        
+        if (source.scrapeHtml) {
+          // Scrape trending page HTML and extract symbols using https module with increased header size
+          const htmlUrl = new URL('https://finance.yahoo.com/markets/stocks/trending/');
+          
+          const html = await new Promise((resolve, reject) => {
+            const options = {
+              hostname: htmlUrl.hostname,
+              path: htmlUrl.pathname,
+              method: 'GET',
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html',
+                'Accept-Encoding': 'identity',
+              },
+              // Increase max header size to handle Yahoo's large cookies
+              maxHeaderSize: 81920
+            };
+            
+            const req = https.request(options, (response) => {
+              if (response.statusCode !== 200) {
+                reject(new Error(`HTTP ${response.statusCode}`));
+                return;
+              }
+              
+              let data = '';
+              response.on('data', chunk => data += chunk);
+              response.on('end', () => resolve(data));
+              response.on('error', reject);
+            });
+            
+            req.on('error', reject);
+            req.end();
+          }).catch(err => {
+            console.error(`Failed to fetch ${source.name} HTML:`, err.message);
+            return null;
+          });
+          
+          if (!html) {
+            continue;
+          }
+          
+          // Extract symbols from the HTML (they appear as "symbol":"XXX")
+          const symbolMatches = html.match(/"symbol":"([A-Z0-9\-\.]+)"/g) || [];
+          const symbols = [...new Set(symbolMatches.map(m => m.match(/"symbol":"([^"]+)"/)[1]))];
+          
+          // Filter to only stock symbols (exclude crypto, indices, etc.)
+          const stockSymbols = symbols.filter(s => 
+            !s.includes('-USD') && 
+            !s.includes('-EUR') && 
+            !s.startsWith('^') && 
+            !s.includes('.') &&
+            s.length <= 5
+          ).slice(0, 50); // Limit to 50
+          
+          if (stockSymbols.length === 0) {
+            console.log(`No stock symbols found for ${source.name}`);
+            continue;
+          }
+          
+          console.log(`Found ${stockSymbols.length} trending symbols, fetching details...`);
+          
+          // Fetch quote data for these symbols using v6 API with crumb
+          const symbolsParam = stockSymbols.join(',');
+          const quoteUrl = `https://query1.finance.yahoo.com/v6/finance/quote?symbols=${symbolsParam}`;
+          const quoteResponse = await fetch(quoteUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'application/json',
+            }
+          });
+          
+          if (!quoteResponse.ok) {
+            // Try alternative: use the screener API with specific symbols
+            console.log(`Quote API returned ${quoteResponse.status}, using symbol data from HTML...`);
+            
+            // Create basic stock entries from the symbols we found
+            quotes = stockSymbols.map(symbol => ({
+              symbol: symbol,
+              shortName: symbol,
+              regularMarketPrice: null,
+              regularMarketChange: null,
+              regularMarketChangePercent: null,
+              regularMarketVolume: null,
+              averageDailyVolume3Month: null,
+              marketCap: null,
+              trailingPE: null
+            }));
+          } else {
+            const quoteData = await quoteResponse.json();
+            quotes = quoteData?.quoteResponse?.result || [];
+          }
+        } else {
+          // Use Yahoo Finance screener API
+          const scrIdMap = {
+            'most-active': 'most_actives',
+            'gainers': 'day_gainers',
+            'losers': 'day_losers'
+          };
+          const apiUrl = `https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?formatted=false&lang=en-US&region=US&scrIds=${scrIdMap[source.name]}&count=250`;
+          
+          const response = await fetch(apiUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'application/json',
+            }
+          });
+          
+          if (!response.ok) {
+            console.error(`Failed to fetch ${source.name}: ${response.status}`);
+            continue;
+          }
+          
+          const data = await response.json();
+          quotes = data?.finance?.result?.[0]?.quotes || [];
+        }
+        
+        if (quotes.length === 0) {
+          console.log(`No quotes found for ${source.name}`);
+          continue;
+        }
+        
+        // Map API response to our stock format
+        const stocks = quotes.map(quote => ({
+          symbol: quote.symbol,
+          name: quote.shortName || quote.longName || quote.symbol,
+          price: quote.regularMarketPrice || null,
+          change: quote.regularMarketChange || null,
+          changePercent: quote.regularMarketChangePercent || null,
+          volume: quote.regularMarketVolume || null,
+          avgVolume: quote.averageDailyVolume3Month || null,
+          marketCap: quote.marketCap || null,
+          peRatio: quote.trailingPE || null
+        }));
+        
+        console.log(`Fetched ${stocks.length} stocks from ${source.name}`);
+        
+        // Insert stocks into database
+        for (const stock of stocks) {
+          try {
+            await pool.query(`
+              INSERT INTO research_stocks (
+                symbol, name, price, change, change_percent, 
+                volume, avg_volume_3m, market_cap, pe_ratio, source, scraped_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              ON CONFLICT (symbol, scraped_at) DO UPDATE SET
+                name = EXCLUDED.name,
+                price = EXCLUDED.price,
+                change = EXCLUDED.change,
+                change_percent = EXCLUDED.change_percent,
+                volume = EXCLUDED.volume,
+                avg_volume_3m = EXCLUDED.avg_volume_3m,
+                market_cap = EXCLUDED.market_cap,
+                pe_ratio = EXCLUDED.pe_ratio
+            `, [
+              stock.symbol,
+              stock.name,
+              stock.price,
+              stock.change,
+              stock.changePercent,
+              stock.volume,
+              stock.avgVolume,
+              stock.marketCap,
+              stock.peRatio,
+              source.name,
+              scrapeTime
+            ]);
+            totalStocks++;
+          } catch (insertError) {
+            console.error(`Error inserting stock ${stock.symbol}:`, insertError.message);
+          }
+        }
+        
+        scrapedSources.push(source.name);
+        
+      } catch (sourceError) {
+        console.error(`Error scraping ${source.name}:`, sourceError);
+      }
+    }
+    
+    // Update scrape run status
+    await pool.query(`
+      UPDATE research_stocks_scrape_runs
+      SET completed_at = NOW(), status = 'completed', stocks_count = $1, sources_scraped = $2
+      WHERE id = $3
+    `, [totalStocks, scrapedSources, runId]);
+    
+    res.json({
+      success: true,
+      cached: false,
+      stocksScraped: totalStocks,
+      sourcesScraped: scrapedSources,
+      scrapeTime: scrapeTime
+    });
+    
+  } catch (error) {
+    console.error('Error in research stocks scrape:', error);
+    res.status(500).json({ error: 'Failed to scrape stock data' });
+  }
+});
+
+/**
+ * Parse Yahoo Finance HTML table to extract stock data
+ */
+function parseYahooFinanceTable(html, source) {
+  const stocks = [];
+  
+  try {
+    // Look for the data in the HTML - Yahoo Finance embeds JSON data in script tags
+    const jsonMatch = html.match(/root\.App\.main\s*=\s*({.+?});/s);
+    
+    if (jsonMatch) {
+      // Try to parse embedded JSON data
+      try {
+        const appData = JSON.parse(jsonMatch[1]);
+        const quotes = appData?.context?.dispatcher?.stores?.ScreenerResultsStore?.results?.quotes || [];
+        
+        for (const quote of quotes) {
+          stocks.push({
+            symbol: quote.symbol,
+            name: quote.shortName || quote.longName || quote.symbol,
+            price: quote.regularMarketPrice || null,
+            change: quote.regularMarketChange || null,
+            changePercent: quote.regularMarketChangePercent || null,
+            volume: quote.regularMarketVolume || null,
+            avgVolume: quote.averageDailyVolume3Month || null,
+            marketCap: quote.marketCap || null,
+            peRatio: quote.trailingPE || null
+          });
+        }
+        
+        if (stocks.length > 0) {
+          return stocks;
+        }
+      } catch (e) {
+        console.log('Could not parse embedded JSON, trying HTML parsing');
+      }
+    }
+    
+    // Fallback: Parse HTML table rows
+    // Look for table rows with stock data
+    const rowRegex = /<tr[^>]*class="[^"]*row[^"]*"[^>]*>([\s\S]*?)<\/tr>/gi;
+    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const linkRegex = /<a[^>]*href="\/quote\/([^"/?]+)[^"]*"[^>]*>/i;
+    const textRegex = /<[^>]+>|[\n\r]/g;
+    
+    let rowMatch;
+    while ((rowMatch = rowRegex.exec(html)) !== null) {
+      const rowHtml = rowMatch[1];
+      const cells = [];
+      let cellMatch;
+      
+      while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
+        const cellContent = cellMatch[1].replace(textRegex, ' ').trim();
+        cells.push(cellContent);
+      }
+      
+      // Extract symbol from link
+      const symbolMatch = rowHtml.match(linkRegex);
+      const symbol = symbolMatch ? symbolMatch[1] : null;
+      
+      if (symbol && cells.length >= 5) {
+        stocks.push({
+          symbol: symbol,
+          name: cells[1] || symbol,
+          price: parseNumber(cells[2]),
+          change: parseNumber(cells[3]),
+          changePercent: parsePercentage(cells[4]),
+          volume: parseVolume(cells[5]),
+          avgVolume: parseVolume(cells[6]),
+          marketCap: parseMarketCap(cells[7]),
+          peRatio: parseNumber(cells[8])
+        });
+      }
+    }
+    
+  } catch (error) {
+    console.error('Error parsing Yahoo Finance HTML:', error);
+  }
+  
+  return stocks;
+}
+
+/**
+ * Helper functions for parsing Yahoo Finance data
+ */
+function parseNumber(str) {
+  if (!str) return null;
+  const cleaned = str.replace(/[,$\s]/g, '');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
+
+function parsePercentage(str) {
+  if (!str) return null;
+  const cleaned = str.replace(/[%\s]/g, '');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
+
+function parseVolume(str) {
+  if (!str) return null;
+  const cleaned = str.replace(/[,\s]/g, '').toUpperCase();
+  let multiplier = 1;
+  let value = cleaned;
+  
+  if (cleaned.endsWith('M')) {
+    multiplier = 1000000;
+    value = cleaned.slice(0, -1);
+  } else if (cleaned.endsWith('B')) {
+    multiplier = 1000000000;
+    value = cleaned.slice(0, -1);
+  } else if (cleaned.endsWith('K')) {
+    multiplier = 1000;
+    value = cleaned.slice(0, -1);
+  }
+  
+  const num = parseFloat(value);
+  return isNaN(num) ? null : Math.round(num * multiplier);
+}
+
+function parseMarketCap(str) {
+  if (!str) return null;
+  const cleaned = str.replace(/[$,\s]/g, '').toUpperCase();
+  let multiplier = 1;
+  let value = cleaned;
+  
+  if (cleaned.endsWith('T')) {
+    multiplier = 1000000000000;
+    value = cleaned.slice(0, -1);
+  } else if (cleaned.endsWith('B')) {
+    multiplier = 1000000000;
+    value = cleaned.slice(0, -1);
+  } else if (cleaned.endsWith('M')) {
+    multiplier = 1000000;
+    value = cleaned.slice(0, -1);
+  } else if (cleaned.endsWith('K')) {
+    multiplier = 1000;
+    value = cleaned.slice(0, -1);
+  }
+  
+  const num = parseFloat(value);
+  return isNaN(num) ? null : Math.round(num * multiplier);
+}
+
+/**
+ * Search stocks using LLM-generated SQL from selected criteria
+ */
+app.post('/api/v1/research-stocks/search', async (req, res) => {
+  try {
+    const { criteriaIds, criteriaValues } = req.body;
+    
+    if (!criteriaIds || !Array.isArray(criteriaIds) || criteriaIds.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one search criterion' });
+    }
+    
+    // Get the selected criteria descriptions
+    const criteriaResult = await pool.query(`
+      SELECT id, name, description, sql_hint
+      FROM research_stock_criteria
+      WHERE id = ANY($1) AND is_active = true
+    `, [criteriaIds]);
+    
+    if (criteriaResult.rows.length === 0) {
+      return res.status(400).json({ error: 'No valid criteria selected' });
+    }
+    
+    // Get Groq API key from Vault
+    const groqSecret = await getSecret('groq');
+    const groqApiKey = groqSecret?.api_key || process.env.GROQ_API_KEY;
+    
+    if (!groqApiKey) {
+      return res.status(500).json({ error: 'LLM service not configured. Please set up Groq API key.' });
+    }
+    
+    // Build a map of criteria values
+    const valuesMap = {};
+    if (criteriaValues && Array.isArray(criteriaValues)) {
+      criteriaValues.forEach(cv => {
+        valuesMap[cv.id] = cv.value;
+      });
+    }
+    
+    // Build the prompt for LLM with user-specified values
+    const criteriaDescriptions = criteriaResult.rows.map(c => {
+      const userValue = valuesMap[c.id];
+      
+      // Replace placeholder values with user-specified values
+      if (c.id === 1 && userValue) {
+        // Market cap: convert B to actual number
+        const marketCapValue = parseFloat(userValue) * 1000000000;
+        return `- Stocks with market cap greater than $${userValue}B (SQL: market_cap > ${marketCapValue})`;
+      } else if (c.id === 2 && userValue) {
+        // Price drop percentage (negative)
+        return `- Stocks with daily price drop more than ${userValue}% (SQL: change_percent < -${userValue})`;
+      } else if (c.id === 3 && userValue) {
+        // Volume deviation percentage
+        const deviationPercent = parseFloat(userValue) / 100;
+        return `- Stocks where volume deviates from 3M average by more than ${userValue}% (SQL: ABS(volume - avg_volume_3m) > (avg_volume_3m * ${deviationPercent}))`;
+      }
+      return `- ${c.description} (SQL: ${c.sql_hint})`;
+    }).join('\n');
+    
+    const llmPrompt = `Generate a PostgreSQL WHERE clause for ONLY these ${criteriaResult.rows.length} criteria:
+
+${criteriaDescriptions}
+
+IMPORTANT RULES:
+1. Use ONLY the SQL hints provided above - do not add any other conditions
+2. If there are multiple criteria, combine them with AND
+3. Return ONLY the SQL conditions, nothing else
+4. Do not add conditions for columns not mentioned in the criteria
+
+Table columns: symbol, name, price, change, change_percent, volume, avg_volume_3m, market_cap, pe_ratio
+
+Output the WHERE clause conditions only (no "WHERE" keyword):`;
+
+    // Call Groq API
+    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: [
+          { role: 'system', content: 'You are a SQL expert. Respond only with valid PostgreSQL WHERE clause conditions. No explanations, no markdown, just the SQL conditions.' },
+          { role: 'user', content: llmPrompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 500,
+      })
+    });
+    
+    if (!groqResponse.ok) {
+      const errorText = await groqResponse.text();
+      console.error('Groq API error:', errorText);
+      return res.status(500).json({ error: 'Failed to generate search query' });
+    }
+    
+    const groqData = await groqResponse.json();
+    let whereClause = groqData.choices[0]?.message?.content?.trim();
+    
+    if (!whereClause) {
+      return res.status(500).json({ error: 'Failed to generate search query from LLM' });
+    }
+    
+    // Security: Basic SQL injection prevention
+    // Remove any dangerous keywords
+    const dangerousPatterns = /(\bDROP\b|\bDELETE\b|\bINSERT\b|\bUPDATE\b|\bTRUNCATE\b|\bALTER\b|\bCREATE\b|\bEXEC\b|;|--)/gi;
+    if (dangerousPatterns.test(whereClause)) {
+      console.error('Potentially dangerous SQL detected:', whereClause);
+      return res.status(400).json({ error: 'Invalid search query generated' });
+    }
+    
+    // Clean up the where clause (remove markdown if present)
+    whereClause = whereClause.replace(/```sql\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    console.log('Generated WHERE clause:', whereClause);
+    
+    // Get the most recent scrape time
+    const latestScrape = await pool.query(`
+      SELECT MAX(scraped_at) as latest FROM research_stocks
+    `);
+    
+    if (!latestScrape.rows[0]?.latest) {
+      return res.status(400).json({ error: 'No stock data available. Please scrape data first.' });
+    }
+    
+    // Execute the search query
+    const searchQuery = `
+      SELECT DISTINCT ON (symbol)
+        symbol, name, price, change, change_percent,
+        volume, avg_volume_3m, market_cap, pe_ratio, source, scraped_at
+      FROM research_stocks
+      WHERE scraped_at = $1 AND (${whereClause})
+      ORDER BY symbol, scraped_at DESC
+    `;
+    
+    console.log('Executing search query:', searchQuery);
+    
+    const searchResult = await pool.query(searchQuery, [latestScrape.rows[0].latest]);
+    
+    res.json({
+      success: true,
+      stocks: searchResult.rows,
+      count: searchResult.rows.length,
+      query: whereClause,
+      criteriaUsed: criteriaResult.rows.map(c => c.description)
+    });
+    
+  } catch (error) {
+    console.error('Error in research stocks search:', error);
+    res.status(500).json({ error: 'Failed to search stocks: ' + error.message });
+  }
+});
+
+/**
+ * Get recent scrape status
+ */
+app.get('/api/v1/research-stocks/status', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, started_at, completed_at, status, stocks_count, sources_scraped, error_message
+      FROM research_stocks_scrape_runs
+      ORDER BY started_at DESC
+      LIMIT 1
+    `);
+    
+    const lastScrape = await pool.query(`
+      SELECT MAX(scraped_at) as last_scrape, COUNT(DISTINCT symbol) as unique_stocks
+      FROM research_stocks
+      WHERE scraped_at > NOW() - INTERVAL '24 hours'
+    `);
+    
+    res.json({
+      lastRun: result.rows[0] || null,
+      lastScrape: lastScrape.rows[0]?.last_scrape,
+      uniqueStocks: parseInt(lastScrape.rows[0]?.unique_stocks) || 0,
+      cacheValid: lastScrape.rows[0]?.last_scrape && 
+        new Date(lastScrape.rows[0].last_scrape) > new Date(Date.now() - 15 * 60 * 1000)
+    });
+  } catch (error) {
+    console.error('Error getting research stocks status:', error);
+    res.status(500).json({ error: 'Failed to get status' });
   }
 });
 

@@ -33,6 +33,7 @@ const navItems: NavItem[] = [
   { label: 'Jim Cramer Advice', path: '/jim-cramer' },
   { label: 'Big Cap Losers', path: '/big-cap-losers' },
   { label: 'Options', path: '/options' },
+  { label: 'Research Stocks', path: '/research-stocks' },
 ]
 
 export default function Header() {

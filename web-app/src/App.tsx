@@ -12,6 +12,7 @@ import Connectors from './pages/Connectors'
 import JimCramerAdvice from './pages/JimCramerAdvice'
 import BigCapLosers from './pages/BigCapLosers'
 import Options from './pages/Options'
+import ResearchStocks from './pages/ResearchStocks'
 // Public pages
 import Pricing from './pages/Pricing'
 import FAQ from './pages/FAQ'
@@ -32,9 +33,9 @@ function LoadingSpinner() {
 
 // Dashboard route - only accessible if onboarding is 100% complete
 function DashboardRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth()
+  const { isAuthenticated, isLoading, isCheckingOnboarding } = useAuth()
 
-  if (isLoading) {
+  if (isLoading || isCheckingOnboarding) {
     return <LoadingSpinner />
   }
 
@@ -50,9 +51,9 @@ function DashboardRoute({ children }: { children: React.ReactNode }) {
 // Onboarding route - accessible to all authenticated users
 // Users can always access onboarding to edit their profile/preferences
 function OnboardingRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth()
+  const { isAuthenticated, isLoading, isCheckingOnboarding } = useAuth()
 
-  if (isLoading) {
+  if (isLoading || isCheckingOnboarding) {
     return <LoadingSpinner />
   }
 
@@ -97,6 +98,9 @@ function AppRoutes() {
 
         {/* Options */}
         <Route path="/options" element={<Options />} />
+
+        {/* Research Stocks */}
+        <Route path="/research-stocks" element={<ResearchStocks />} />
         
         {/* Onboarding route - protected, but accessible only if onboarding not complete */}
         <Route
